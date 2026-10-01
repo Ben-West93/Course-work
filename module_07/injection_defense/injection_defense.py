@@ -163,6 +163,9 @@ _PROMPT_LEAK_FRAGMENTS = [
 _API_KEY_RE = re.compile(r"\bsk-(?:proj-)?[a-zA-Z0-9]{20,}")   # OpenAI-style keys; 20+ chars, so short "sk-abc" fragments don't count
 _AWS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")              # AWS access key IDs
 _JWT_RE = re.compile(r"\beyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}")  # JWT: base64 header.payload.signature
+# Any "Bearer <token>" auth header, JWT or not. 16+ token chars so prose like
+# "bearer of bad news" doesn't match; IGNORECASE catches "bearer"/"BEARER".
+_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*", re.IGNORECASE)
 _PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 # Database URLs with embedded credentials or hosts, e.g.
 # postgresql://admin:pw@db.internal:5432/app
@@ -217,7 +220,9 @@ def validate_output(response: str) -> tuple[bool, list[str]]:
     if _DB_URL_RE.search(response):
         flagged.append("Database connection string")
     if _JWT_RE.search(response):
-        flagged.append("JWT / bearer token")
+        flagged.append("JWT token")
+    if _BEARER_RE.search(response):
+        flagged.append("Bearer token")
     if _AWS_KEY_RE.search(response):
         flagged.append("AWS access key")
     if _PRIVATE_KEY_RE.search(response):
@@ -288,6 +293,8 @@ def run_tests() -> bool:
         ("JWT token",
          "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
                                                                                                False),
+        ("Bearer token (non-JWT)",       "Send header Authorization: Bearer abc123def456ghi789jkl012", False),
+        ("'bearer' in normal prose",     "The messenger was the bearer of bad news.",          True),
         ("Multiple leaks at once",       "key=sk-ABCDEFGHIJKLMNOPQRSTUVWX host=localhost",     False),
     ]
 

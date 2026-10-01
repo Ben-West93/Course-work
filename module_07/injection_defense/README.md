@@ -37,7 +37,7 @@ Each pattern is compiled to a regex with `\b` word boundaries (so `act as` doesn
 | Internal hosts | `localhost`, `127.0.0.1`, `192.168.`, `0.0.0.0` (case-insensitive) plus a regex for `10.x` and `172.16–31.x` |
 | System prompt leak | The full prompt, or any sentence of 40+ chars from it (numbering removed) |
 | Extra: DB connection strings | `postgres://`, `mysql://`, `mongodb+srv://`, `redis://`, … |
-| Extra: tokens / keys | JWTs (`eyJ….eyJ….…`), AWS `AKIA…` keys, `-----BEGIN … PRIVATE KEY-----` |
+| Extra: tokens / keys | `Bearer <token>` headers (16+ chars, any case), JWTs (`eyJ….eyJ….…`), AWS `AKIA…` keys, `-----BEGIN … PRIVATE KEY-----` |
 
 It returns every match found (not only the first), so a response that leaks both a key and a host gets both flags. Empty and `None` responses return `(True, [])` without raising.
 
@@ -55,7 +55,7 @@ It returns every match found (not only the first), so a response that leaks both
 
 ## Testing takeaways
 
-- **43/43 assertions pass:** 18 input, 16 output, 3 robustness, 6 prompt-ingredient checks.
+- **45/45 assertions pass:** 18 input, 18 output, 3 robustness, 6 prompt-ingredient checks.
 - **Case normalization alone isn't enough.** Cyrillic lookalikes, zero-width spaces and fullwidth letters all beat a plain `.lower()` check. NFKC plus a homoglyph map plus stripping invisible chars closes those gaps.
 - **Substring matching causes false positives.** `"act as" in query` flags "sodium **react as** a reducing agent". Word-boundary regexes fix this.
 - **System prompt leaks are rarely verbatim.** The first version only matched whole numbered lines and missed a model paraphrasing "Answer ONLY using information…" without the `3.`. Matching sentence by sentence caught it. Short sentences are excluded so a legitimate "I don't know" answer isn't flagged.
