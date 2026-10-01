@@ -1,0 +1,11 @@
+SQL Databases
+
+Relational databases store data in tables made of rows and columns. Each table describes one kind of entity, such as users or orders, and each row is one record. A primary key uniquely identifies every row, and a foreign key in one table references the primary key of another, which is how relationships between tables are expressed.
+
+SQL (Structured Query Language) is used to read and change data. SELECT name, email FROM users WHERE active = 1 ORDER BY name LIMIT 10 retrieves rows, INSERT INTO adds new rows, UPDATE changes existing ones, and DELETE removes them. Always include a WHERE clause on UPDATE and DELETE statements, otherwise every row in the table is affected.
+
+JOIN combines rows from related tables. An INNER JOIN returns only rows that have a match on both sides, while a LEFT JOIN keeps every row from the left table and fills missing matches with NULL. Aggregate functions such as COUNT, SUM, and AVG combined with GROUP BY summarize data, for example counting orders per customer, and HAVING filters the grouped results.
+
+SQLite is a lightweight database stored in a single file and is built into Python through the sqlite3 module. A connection is opened with sqlite3.connect("app.db"), queries run through a cursor, and conn.commit() saves changes. Parameterized queries using ? placeholders, such as cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,)), protect against SQL injection because user input is never pasted directly into the SQL string.
+
+Indexes speed up lookups on columns that are searched or joined frequently, at the cost of extra storage and slower writes. Transactions group several statements so they either all succeed or all fail, which keeps data consistent when, for example, money is moved between two accounts. ORMs such as SQLAlchemy map tables to Python classes so you can work with objects instead of raw SQL.
