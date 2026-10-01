@@ -108,6 +108,30 @@ for _entry in eval_set:
     assert not _missing, f"unindexed IDs {_missing} in: {_entry['query']}"
 
 
+# ── Edge-case pre-check ───────────────────────────────────────────────────────
+# Announced at startup so every run shows which failure modes are handled.
+EDGE_CASES = [
+    "Zero retrieval: a strict threshold can drop every hit -> precision "
+    "would divide by 0; scored as 0.0",
+    "Empty relevant_ids -> recall would divide by 0; guarded and rejected "
+    "at load",
+    "Threshold boundary: distance == threshold is kept (<=)",
+    "Distance metric: Chroma defaults to L2; collection set to cosine "
+    "(0-2) so thresholds are comparable",
+    "n_results > collection size: clamped to collection.count()",
+    "Unindexed ground-truth IDs: would cap recall below 100%; rejected "
+    "at load",
+    "Duplicate IDs: checked in corpus; ground truth stored as sets",
+    "Empty eval_set: averages guarded against division by 0",
+]
+
+
+def announce_edge_cases():
+    print("=== EDGE-CASE PRE-CHECK ===")
+    for n, case in enumerate(EDGE_CASES, 1):
+        print(f"  {n}. {case}")
+
+
 # ── Evaluation function ────────────────────────────────────────────────────────
 def evaluate(n_results: int, distance_threshold: float = None):
     """
@@ -150,6 +174,10 @@ def evaluate(n_results: int, distance_threshold: float = None):
         # Recall    = |retrieved ∩ relevant| / |relevant|   — how complete they are.
         overlap = len(relevant_ids & set(retrieved_ids))
 
+        # Note: with 1 relevant doc, precision can't exceed 1/len(retrieved)
+        # (33.3% at k=3, 20% at k=5) even when it ranks first, so low
+        # precision at fixed k is partly a ceiling, not bad ranking.
+
         # Zero-division guards: a strict threshold can filter out every hit,
         # leaving nothing retrieved. Returning nothing earns no credit, so
         # both metrics are 0 rather than undefined.
@@ -171,6 +199,8 @@ def evaluate(n_results: int, distance_threshold: float = None):
 
 # ── Run at 3 settings ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    announce_edge_cases()
+
     evaluate(n_results=3)
     evaluate(n_results=5)
     evaluate(n_results=5, distance_threshold=0.5)

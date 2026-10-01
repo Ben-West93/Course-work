@@ -7,6 +7,7 @@ Module 07 exercise: measure the quality of a ChromaDB semantic search with preci
 | File | Purpose |
 |------|---------|
 | `my_eval.py` | Completed evaluation script |
+| `test_eval.py` | Multi-angle tests for edge cases and average calculations |
 | `starter.py` | Original starter scaffold, kept for reference |
 
 ## Running
@@ -17,7 +18,13 @@ From the repo root:
 .venv/bin/python module_07/eval_search_system/my_eval.py
 ```
 
-This uses an in-memory `chromadb.EphemeralClient()`, so no files are written. The default embedding model is `all-MiniLM-L6-v2`.
+To run the tests:
+
+```bash
+.venv/bin/python module_07/eval_search_system/test_eval.py
+```
+
+The script first prints an edge-case pre-check that lists each failure mode it guards against, then runs the evaluations and the analysis. It uses an in-memory `chromadb.EphemeralClient()`, so no files are written. The default embedding model is `all-MiniLM-L6-v2`.
 
 ## Dataset
 
@@ -59,7 +66,7 @@ Key findings (the script prints the full analysis):
 - **Weakest queries:** Q8, which is vague (the correct doc ranks 1st but at 0.735, so any threshold ≤ 0.7 drops it), Q3, which needs a doc with no shared wording, and Q5/Q6, which are paraphrased or cross-topic and keep only half their relevant docs at 0.7.
 - **Suggested improvements:** hybrid BM25 + vector search, a cutoff relative to the best score instead of one absolute threshold, a reranker or stronger embedding model, and topic-prefixed chunks with metadata filters.
 
-## Edge cases tested
+## Edge cases tested (`test_eval.py`)
 
 - Thresholds of 0.0 and 0.1, where no documents pass: averages are 0%/0% and no division error occurs.
 - A threshold exactly equal to a hit's distance keeps that hit. A threshold 1e-6 below it drops the hit.
