@@ -163,12 +163,21 @@ All three sizes found the right document for every question. The 8 documents are
 about very different topics, so even big chunks end up in the right file. The
 difference was in how high the scores were and how clean the top results were.
 
-The 150-character chunks got the highest scores, especially on questions where the
-answer is one sentence. For question 2 the top score was 0.599 at 150 vs 0.454 at
-600, and for question 5 it was 0.501 vs 0.382. I think this is because a
-150-character chunk is about the size of that one sentence, so its embedding is
-mostly about the answer. A 600-character chunk also includes other things (like the
-400 and 401 codes, or JOINs and indexes), which waters it down.
+The 150-character chunks got the highest scores, and question 5 shows why. The
+answer is one sentence, and at 150 the top result was almost exactly that sentence
+("Either all statements succeed (COMMIT) or all are rolled back (ROLLBACK)"), with a
+score of 0.501 vs 0.382 at 600. I think this is because a 150-character chunk is
+about the size of that one sentence, so its embedding is mostly about the answer. A
+600-character chunk also includes other things (like JOINs and indexes), which
+waters it down.
+
+A higher score didn't always mean a better answer, though. On question 2, 150 had
+the highest top score of the whole experiment (0.599 vs 0.454 at 600), but when I
+read that chunk it was a general sentence about HTTP status codes ("200 OK means
+success. 201 Created is..."), not the 403 answer. The chunk with the 403 sentence
+came second (0.470). At 300 and 600 the top result was the one with the answer. The
+"relevant" counts in the tables only check that a result came from the right file,
+so I had to read the actual text to catch this.
 
 The 600-character chunks had the lowest scores on 4 of the 5 questions, including
 the lowest average of the whole experiment (0.305 on question 5). On question 4 an
@@ -183,10 +192,11 @@ chunk didn't show up until lower down. At 300 and 600 both files were in the top
 because a bigger chunk holds enough of the FastAPI explanation to match the question.
 
 Overall I think 300 worked best. It was the only size where all 15 of the top-3
-results were relevant, it found both relevant files for question 3, and the results
-are long enough to actually read. Its precision at top 5 was the lowest (0.63), but
-that's because once the best chunks from the right file are used up, results 4 and 5
-come from other files. Each question only has one right file, so asking for 5
+results were relevant, its top result for question 2 actually had the answer, it
+found both relevant files for question 3, and the results are long enough to
+actually read. Its precision at top 5 was the lowest (0.63), but that's because
+once the best chunks from the right file are used up, results 4 and 5 come from
+other files. Most of the questions only have one right file, so asking for 5
 results makes that happen.
 
 Question 1 barely changed between sizes (0.432, 0.429, 0.414). The answer is spread
