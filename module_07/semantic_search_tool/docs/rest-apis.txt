@@ -1,0 +1,19 @@
+REST APIs — Design, HTTP, and Best Practices
+
+REST (Representational State Transfer) is an architectural style for designing networked applications. RESTful APIs communicate over HTTP and treat everything as a resource identified by a URL. REST is stateless — each request contains all the information needed to process it, with no session stored on the server.
+
+HTTP methods define the action performed on a resource. GET retrieves data without side effects. POST creates a new resource. PUT replaces a resource entirely. PATCH partially updates a resource. DELETE removes a resource. Using the correct method is important for caching, idempotency, and clarity.
+
+HTTP status codes communicate the result of a request. 200 OK means success. 201 Created is returned after a successful POST. 400 Bad Request means the client sent invalid data. 401 Unauthorized means authentication is required. 403 Forbidden means the client is authenticated but lacks permission. 404 Not Found means the resource doesn't exist. 500 Internal Server Error means something went wrong on the server.
+
+URL design follows resource-oriented conventions. Use nouns for resources (/users, /products) not verbs (/getUser). Use plural nouns for collections. Nest related resources logically (/users/42/orders). Keep URLs lowercase and use hyphens for readability.
+
+Request and response bodies are typically JSON. The Content-Type header is set to application/json. Responses should be consistent in structure — always include the same fields so clients can rely on the shape of the data.
+
+Authentication options include API keys (passed in headers), Basic Auth (username and password encoded in the Authorization header), and JWT (JSON Web Tokens) for stateless token-based auth. OAuth 2.0 is the standard for third-party authorization flows.
+
+Versioning APIs prevents breaking changes from affecting existing clients. Common strategies include URL versioning (/api/v1/users), header versioning (Accept: application/vnd.myapi.v1+json), and query parameter versioning (?version=1).
+
+Rate limiting protects APIs from abuse by restricting how many requests a client can make in a time window. Limits are usually communicated through response headers like X-RateLimit-Limit and X-RateLimit-Remaining.
+
+CORS (Cross-Origin Resource Sharing) controls which web origins can call an API from a browser. The server sets Access-Control-Allow-Origin headers. During development, allowing all origins (*) is common, but production APIs should restrict origins to known clients.

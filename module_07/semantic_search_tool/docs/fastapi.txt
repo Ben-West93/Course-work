@@ -1,0 +1,19 @@
+FastAPI — Building Modern Python APIs
+
+FastAPI is a modern, high-performance Python web framework for building APIs. It is built on top of Starlette for the web layer and Pydantic for data validation. FastAPI automatically generates interactive API documentation at /docs (Swagger UI) and /redoc.
+
+FastAPI uses Python type hints to validate request data automatically. When a route function parameter is annotated with a Pydantic model, FastAPI parses the request body, validates field types, and returns a 422 Unprocessable Entity response if validation fails — all without any manual validation code.
+
+Pydantic models define the schema for request and response data. A model is a class that inherits from BaseModel. Each field is declared with a type annotation and optional default value. Pydantic validates data at instantiation time and converts types when possible.
+
+Path parameters are declared in the URL pattern and as function arguments: @app.get("/users/{user_id}"). Query parameters are function arguments without a corresponding path segment: def get_users(skip: int = 0, limit: int = 10). Request bodies use Pydantic models as type annotations.
+
+Dependency injection in FastAPI is handled with Depends(). Common uses include database session management, authentication, and shared configuration. Dependencies can depend on other dependencies, forming a tree that FastAPI resolves automatically.
+
+FastAPI supports async route functions using async def. This allows non-blocking I/O operations — like database queries or HTTP calls — to run concurrently, improving throughput under load. Use await with async libraries like asyncpg or httpx.
+
+Background tasks run after the response is sent to the client. They are useful for sending emails, logging, or triggering slow processes without making the client wait. Add them to route functions using the BackgroundTasks parameter.
+
+Middleware runs before and after every request. Common uses include request logging, authentication checks, CORS headers, and rate limiting. FastAPI middleware is defined as an ASGI middleware class or with the @app.middleware("http") decorator.
+
+Testing FastAPI applications uses the TestClient from the httpx or starlette.testclient module. Tests make real HTTP calls to the app without a running server. Dependency overrides let you replace production dependencies (like a real database) with test doubles during testing.

@@ -1,0 +1,19 @@
+Python Fundamentals and Core Concepts
+
+Python is a high-level, interpreted programming language known for its clear syntax and readability. It was created by Guido van Rossum and first released in 1991. Python emphasizes code readability and allows programmers to express concepts in fewer lines of code than languages like C++ or Java.
+
+Python uses dynamic typing, meaning you do not need to declare variable types. Variables are created when first assigned and can change type at runtime. Python also uses significant whitespace — indentation defines code blocks rather than braces or keywords.
+
+Functions in Python are defined with the def keyword. They can accept positional arguments, keyword arguments, default values, and arbitrary argument lists using *args and **kwargs. Functions are first-class objects in Python, meaning they can be assigned to variables, passed as arguments, and returned from other functions.
+
+Python supports multiple programming paradigms including procedural, object-oriented, and functional styles. Classes are defined with the class keyword and support inheritance, encapsulation, and polymorphism. The __init__ method serves as the constructor, and self refers to the instance.
+
+List comprehensions provide a concise way to create lists: [x**2 for x in range(10) if x % 2 == 0]. Dictionary and set comprehensions follow the same pattern. Generator expressions use parentheses instead of brackets and produce values lazily.
+
+Python's standard library is extensive, covering file I/O, networking, data formats, mathematics, and more. The os and pathlib modules handle file system operations. The json module parses and serializes JSON. The datetime module handles dates and times.
+
+Virtual environments (venv) isolate project dependencies. Each project should have its own environment to avoid version conflicts. Requirements are tracked in a requirements.txt file and installed with pip install -r requirements.txt.
+
+Error handling uses try/except/finally blocks. Python has a hierarchy of built-in exceptions: Exception is the base class for most errors. You can raise custom exceptions by subclassing Exception. Context managers (with statements) ensure resources are properly cleaned up even when errors occur.
+
+Python's itertools and functools modules provide powerful tools for functional programming. map(), filter(), and reduce() apply functions to iterables. The itertools module offers chain(), product(), combinations(), and permutations() for working with sequences.

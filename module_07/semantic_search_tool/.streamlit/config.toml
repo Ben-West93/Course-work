@@ -1,0 +1,7 @@
+[server]
+# The file watcher walks every imported module, and transformers' lazy imports
+# make it spam ModuleNotFoundError tracebacks. Restart the app after code edits.
+fileWatcherType = "none"
+
+[browser]
+gatherUsageStats = false

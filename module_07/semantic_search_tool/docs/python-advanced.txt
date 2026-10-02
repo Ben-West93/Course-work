@@ -1,0 +1,19 @@
+Advanced Python — Data Structures, Algorithms, and Performance
+
+Understanding the time and space complexity of operations is critical for writing efficient Python code. Big-O notation describes how an algorithm's runtime grows as input size increases. O(1) is constant time, O(n) is linear, O(n log n) is common for sorting, and O(n²) appears in nested loops.
+
+Python's built-in data structures have well-defined time complexities. List append and index access are O(1). List search (in operator) is O(n). Dictionary and set lookups are O(1) on average due to hashing. Sorting a list with sort() or sorted() is O(n log n) using Timsort.
+
+Decorators are functions that wrap other functions to modify their behaviour. They are applied with the @ syntax. Common uses include logging, caching, authentication checks, and timing. The functools.wraps decorator preserves the wrapped function's metadata.
+
+The functools.lru_cache decorator caches function results for repeated calls with the same arguments. This is called memoization and can dramatically speed up recursive algorithms like Fibonacci calculations.
+
+Generators are functions that yield values one at a time instead of returning a complete list. They are memory-efficient for large datasets because they produce values lazily. The yield keyword pauses the function and resumes it on the next call to next().
+
+Context managers implement the __enter__ and __exit__ methods. They ensure setup and teardown code runs correctly even if an exception occurs. The with open("file.txt") as f pattern is the most common example. Custom context managers can also be created using the contextlib.contextmanager decorator.
+
+Dataclasses (from the dataclasses module) reduce boilerplate when creating classes that mainly store data. The @dataclass decorator automatically generates __init__, __repr__, and __eq__ methods based on annotated fields.
+
+Type hints (PEP 484) improve code readability and enable static analysis tools like mypy. Common types include int, str, list, dict, Optional, Union, and Callable. Type hints are not enforced at runtime but serve as documentation and catch errors before execution.
+
+Profiling Python code helps identify bottlenecks. The cProfile module measures function call counts and time. The timeit module benchmarks small snippets. Memory profiling tools like memory_profiler track RAM usage over time.

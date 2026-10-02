@@ -1,0 +1,19 @@
+Embeddings, Vector Search, and ChromaDB
+
+An embedding is a dense numerical vector that represents the semantic meaning of a piece of text. Words, sentences, or entire documents are mapped to points in a high-dimensional space such that semantically similar texts land near each other. Most modern sentence embedding models produce vectors of 384 to 1536 dimensions.
+
+Sentence Transformers (the sentence-transformers Python library) provides pre-trained models that embed arbitrary text. The model all-MiniLM-L6-v2 produces 384-dimensional vectors and is fast and lightweight — a good default for semantic search. Larger models like all-mpnet-base-v2 produce higher quality vectors at the cost of speed.
+
+Cosine similarity measures the angle between two vectors. A score of 1.0 means identical direction (same meaning), 0.0 means perpendicular (unrelated), and -1.0 means opposite direction. Most semantic search systems use cosine similarity or cosine distance (1 - cosine similarity).
+
+Chunking is the process of splitting long documents into smaller pieces before embedding. This matters because embedding models have a token limit (usually 256–512 tokens), and long documents lose detail when compressed into a single vector. Smaller chunks produce more precise retrieval at the cost of losing broader context.
+
+Fixed-size chunking splits text into chunks of exactly N characters with an optional overlap. It is simple and predictable. Paragraph-based chunking splits on natural boundaries like double newlines. Semantic chunking splits where meaning shifts. Each strategy has tradeoffs in coherence, coverage, and retrieval precision.
+
+ChromaDB is an open-source vector database designed for AI applications. It stores documents, their embeddings, and optional metadata. It supports both in-memory (EphemeralClient) and persistent (PersistentClient) storage. Collections group related documents, similar to tables in a SQL database.
+
+The core ChromaDB workflow: create a collection, add documents with IDs and optional metadata, then query with a text or embedding. ChromaDB handles embedding internally if you provide an embedding function, or you can provide pre-computed embeddings directly.
+
+Metadata filtering in ChromaDB restricts search to a subset of documents. The where parameter accepts conditions on metadata fields: where={"source": "fastapi.txt"} or where={"module": {"$in": ["5", "6"]}}. This combines semantic search with structured filtering — also called hybrid search.
+
+Retrieval-Augmented Generation (RAG) combines vector search with an LLM. The pipeline: embed the user's query, retrieve the most relevant document chunks from ChromaDB, inject those chunks into the LLM's prompt as context, and ask the model to answer using only the provided context. This grounds the model's answer in real documents and reduces hallucination.

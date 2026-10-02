@@ -1,0 +1,19 @@
+SQL Databases — Fundamentals and Query Patterns
+
+A relational database stores data in tables composed of rows and columns. Tables are related through foreign keys — a column in one table that references the primary key of another. This structure eliminates data duplication and maintains referential integrity.
+
+SQL (Structured Query Language) is the standard language for interacting with relational databases. The four core data manipulation operations are SELECT (read), INSERT (create), UPDATE (modify), and DELETE (remove). DDL statements like CREATE TABLE, ALTER TABLE, and DROP TABLE define the structure.
+
+SELECT queries retrieve data. The WHERE clause filters rows. ORDER BY sorts results. LIMIT restricts the number of rows returned. GROUP BY aggregates rows by a column value, and HAVING filters those groups. Subqueries nest one SELECT inside another.
+
+JOIN operations combine rows from multiple tables. INNER JOIN returns rows with matching values in both tables. LEFT JOIN returns all rows from the left table and matching rows from the right. A missing match in a LEFT JOIN produces NULL values for the right table's columns.
+
+Indexes speed up queries by allowing the database to find rows without scanning every row in a table. A primary key index is created automatically. You create secondary indexes on columns used frequently in WHERE clauses or JOIN conditions. Indexes speed up reads but slow down writes.
+
+Transactions group multiple SQL statements into an atomic unit. Either all statements succeed (COMMIT) or all are rolled back (ROLLBACK) on failure. Transactions ensure data consistency. The ACID properties — Atomicity, Consistency, Isolation, Durability — define reliable transaction behaviour.
+
+SQLite is a lightweight, file-based database that requires no server setup. It is ideal for development, testing, and small applications. SQLite databases are stored as a single file and are directly readable by Python's built-in sqlite3 module.
+
+PostgreSQL is a powerful open-source relational database with advanced features: JSON columns, full-text search, window functions, CTEs (Common Table Expressions), and strong compliance with the SQL standard. It is the most common choice for production Python web applications.
+
+SQLAlchemy is Python's most popular database toolkit. The Core layer provides a SQL expression language that maps closely to SQL. The ORM layer maps Python classes to database tables, allowing you to work with objects instead of raw SQL. Alembic handles database migrations for SQLAlchemy projects.

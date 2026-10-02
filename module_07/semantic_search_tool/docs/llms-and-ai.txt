@@ -1,0 +1,19 @@
+Large Language Models — How They Work and How to Use Them
+
+Large Language Models (LLMs) are neural networks trained on massive text corpora to predict the next token in a sequence. At inference time they generate text by repeatedly sampling the next token given the preceding context. GPT-4, Claude, and Gemini are all transformer-based LLMs.
+
+The transformer architecture, introduced in the 2017 paper "Attention Is All You Need," is the foundation of modern LLMs. The key mechanism is self-attention: the model learns which parts of the input are relevant to each other. Transformers process the entire input in parallel rather than sequentially, making them faster to train than earlier RNN-based models.
+
+Tokens are the units LLMs process — roughly 3–4 characters or 0.75 words on average. A model's context window is the maximum number of tokens it can attend to at once. GPT-4 Turbo has a 128,000-token context window. Inputs and outputs both count toward the context limit.
+
+Hallucination is a well-known failure mode where the model generates text that is plausible-sounding but factually incorrect. LLMs have no reliable knowledge of what they don't know; they produce tokens that statistically fit the context. Retrieval-Augmented Generation (RAG) mitigates hallucination by grounding answers in retrieved documents.
+
+The system prompt is an instruction given to the model before the user's message. It sets the model's role, constrains its behaviour, and provides context. A well-designed system prompt is the most effective lever for improving output quality without changing the model.
+
+Temperature controls randomness in token sampling. At temperature 0 the model is deterministic, always choosing the highest-probability token. Higher temperatures produce more varied, creative output. Most production applications use a low temperature (0.0–0.3) for factual tasks and higher values for creative tasks.
+
+Few-shot prompting improves reliability by including examples of the desired input-output format in the prompt. Even two or three examples can dramatically improve consistency for structured outputs like JSON extraction or classification.
+
+Fine-tuning trains a pre-trained model on a smaller domain-specific dataset to specialize its behaviour. It is expensive and requires careful data curation. For most use cases, prompt engineering and RAG are more cost-effective than fine-tuning.
+
+The OpenAI API accepts a list of messages, each with a role (system, user, or assistant) and content. The model responds with a completion message. Token usage is billed per 1,000 tokens — both input and output count.

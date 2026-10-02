@@ -1,0 +1,19 @@
+Streamlit — Building Data Apps in Pure Python
+
+Streamlit is an open-source Python library for building interactive web applications without writing HTML, CSS, or JavaScript. A Streamlit app is just a Python script — every time a user interacts with a widget, the entire script re-runs from top to bottom and the UI updates.
+
+The execution model is Streamlit's most important concept. Because the script re-runs on every interaction, all state must be explicitly managed using st.session_state. Variables not stored in session_state are reset on each run. This differs from traditional web frameworks where state persists between requests.
+
+st.session_state is a dictionary-like object that persists across reruns. Initialize keys before reading them to avoid KeyError: if "count" not in st.session_state: st.session_state.count = 0. Session state is per-user and per-browser tab.
+
+Streamlit widgets return their current value directly. st.text_input("Name") returns the string the user typed. st.selectbox("Option", ["A","B","C"]) returns the selected string. st.slider("Value", 0, 100, 50) returns the integer. Buttons return True only on the run immediately after they are clicked.
+
+Layout components control the visual structure. st.columns([1, 2]) creates side-by-side panels. st.sidebar creates a persistent sidebar. st.tabs(["Tab1","Tab2"]) creates a tabbed interface. st.expander("Details") creates a collapsible section. st.container() groups elements without visual separation.
+
+Data display functions cover many formats. st.dataframe() renders an interactive table. st.table() renders a static table. st.json() shows formatted JSON. st.metric(label, value, delta) displays a KPI card with optional change indicator. st.pyplot() and st.altair_chart() display charts.
+
+Caching improves performance. @st.cache_data caches the return value of a function based on its arguments. @st.cache_resource caches a shared resource like a database connection or a loaded ML model that should not be recreated on every run.
+
+Streamlit supports chat interfaces with st.chat_message() and st.chat_input(). st.chat_message(role) is a context manager that renders a styled bubble. st.write_stream() accepts a generator and streams text token by token, creating a typewriter effect ideal for LLM responses.
+
+Deployment options include Streamlit Community Cloud (free, GitHub-connected), Docker containers, or any cloud platform that supports Python processes. The app runs on port 8501 by default.

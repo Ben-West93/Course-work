@@ -1,0 +1,2 @@
+# Saved ChromaDB index (rebuild it with `python ingest.py`)
+chroma_data/
