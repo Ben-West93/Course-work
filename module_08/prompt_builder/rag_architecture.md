@@ -33,9 +33,9 @@ The five stages of a RAG pipeline, using the stack from Modules 7 and 8.
                 ▼
  ┌──────────────────────────────┐
  │ 5. LLM GENERATION            │  What: model answers from the context only,
- │    chat completion API       │        cites sources, or says it doesn't
- │                              │        have enough information
- │                              │  Tech: LLM API (served via Docker in Module 8)
+ │    OpenAI gpt-4o-mini        │        cites sources, or says it doesn't
+ │    (chat completions)        │        have enough information
+ │                              │  Tech: OpenAI Python SDK, gpt-4o-mini
  └──────────────┬───────────────┘
                 │  answer: str + cited sources
                 ▼
@@ -54,5 +54,5 @@ stored vectors live in different spaces and retrieval returns junk.
 | 1 → 2 | user question | `str` |
 | 2 → 3 | query embedding | `list[float]`, 384 dims |
 | 3 → 4 | top-k chunks | `list[dict]` with `text`, `source`, `distance` |
-| 4 → 5 | assembled prompt | `str` |
+| 4 → 5 | assembled prompt | `str`, sent as chat messages |
 | 5 → user | grounded answer | `str` with `(Source: file)` citations |
