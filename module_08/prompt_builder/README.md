@@ -12,7 +12,7 @@ estimate. The full pipeline diagram is in [rag_architecture.md](rag_architecture
 From the repo root:
 
 ```bash
-.venv/bin/python module_08/prompt_builder.py
+.venv/bin/python module_08/prompt_builder/prompt_builder.py
 ```
 
 No dependencies outside the standard library.
