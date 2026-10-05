@@ -1,0 +1,9 @@
+Chunking is the process of splitting long documents into smaller pieces before embedding them. Embedding a whole document blurs many topics into one vector, which hurts retrieval.
+
+Fixed-size chunking cuts text every N characters or tokens. It is simple but often splits sentences in half. Adding an overlap of 10 to 20 percent between chunks reduces lost context at the boundaries.
+
+Paragraph chunking splits on blank lines ("\n\n"). It respects the author's own structure and usually keeps one idea per chunk, but paragraph lengths can vary a lot.
+
+Sentence-based and recursive chunking are middle-ground options. Recursive splitters try paragraphs first, then sentences, then words until each chunk fits under a size limit.
+
+In the chunk comparison experiment from module 07, paragraph chunks gave the most readable results, while small fixed chunks with overlap scored slightly better on exact-fact lookups.

@@ -1,0 +1,46 @@
+Using existing collection: 37 chunks.
+Distance threshold: 1.3
+
+============================================================
+[IN-SCOPE] What embedding model does ChromaDB use by default?
+  chromadb.md #1  distance=0.541  kept
+  embeddings.md #2  distance=0.683  kept
+  chromadb.md #0  distance=0.891  kept
+Confidence   : medium
+Chunks used  : 3
+Sources      : ['chromadb.md', 'embeddings.md']
+Answer       :
+ChromaDB uses the all-MiniLM-L6-v2 sentence-transformer model by default. (embeddings.md)
+
+============================================================
+[PARTIAL] How do I choose a good chunk overlap for PDFs?
+  chunking.txt #0  distance=0.883  kept
+  chunking.txt #1  distance=0.972  kept
+  chunking.txt #4  distance=1.073  kept
+Confidence   : medium
+Chunks used  : 3
+Sources      : []
+Answer       :
+I don't know.
+
+============================================================
+[OUT-OF-SCOPE] Who won the 2018 World Cup?
+  chromadb.md #4  distance=1.751  dropped
+  semantic_search.md #4  distance=1.780  dropped
+  ollama.txt #3  distance=1.791  dropped
+Confidence   : low
+Chunks used  : 0
+Sources      : []
+Answer       :
+I couldn't find relevant information in the documents to answer that.
+
+============================================================
+[AMBIGUOUS] What is a good threshold?
+  semantic_search.md #3  distance=1.147  kept
+  semantic_search.md #0  distance=1.277  kept
+  semantic_search.md #2  distance=1.281  kept
+Confidence   : low
+Chunks used  : 3
+Sources      : []
+Answer       :
+I don't know.
