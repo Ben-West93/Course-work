@@ -1,0 +1,32 @@
+# .dockerignore
+# Anything listed here never gets sent to the Docker daemon as build context,
+# so a COPY can't pull it into the image by accident. Smaller context also
+# means faster builds.
+
+# Python cache, regenerated inside the container anyway
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# local venv is built for macOS, it wouldn't even run on the linux image
+venv/
+.venv/
+env/
+
+# Version control
+.git/
+.gitignore
+
+# secrets stay out of the image, pass them at run time with -e / --env-file
+.env
+
+# ChromaDB data is rebuilt inside the container via POST /ingest
+chroma_data/
+rag_db/
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
