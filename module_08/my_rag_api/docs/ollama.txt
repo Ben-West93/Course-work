@@ -1,0 +1,9 @@
+Ollama is a tool for running large language models locally. It runs a server on http://localhost:11434 that exposes a REST API.
+
+Start the server with "ollama serve" and download a model with "ollama pull llama3.2:1b". "ollama list" shows installed models.
+
+The /api/chat endpoint takes a JSON body with a model name and a list of messages, each with a role (system, user or assistant) and content.
+
+With "stream": true the response arrives as newline-delimited JSON. Each line has a message.content field holding the next token, and the final line has "done": true along with timing stats such as eval_count and eval_duration.
+
+Smaller models like llama3.2:1b respond fast on a laptop but follow instructions less reliably than larger models such as llama3.1:8b. Temperature controls randomness; lower values give more consistent answers.
