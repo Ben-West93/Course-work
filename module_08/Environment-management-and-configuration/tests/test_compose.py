@@ -26,8 +26,11 @@ pytestmark = [
 def compose_config(**env_overrides):
     env = {k: v for k, v in os.environ.items() if k != "OLLAMA_HOST_PORT"}
     env.update(env_overrides)
+    # --env-file replaces the file compose reads for ${...} in the YAML, so an
+    # OLLAMA_HOST_PORT=11435 in .env doesn't change the ports checked here.
+    # The services' env_file: .env is separate and still read
     out = subprocess.run(
-        [COMPOSE, "config", "--format", "json"], cwd=HERE, env=env,
+        [COMPOSE, "--env-file", os.devnull, "config", "--format", "json"], cwd=HERE, env=env,
         capture_output=True, text=True, check=True,
     )
     return json.loads(out.stdout)
@@ -136,9 +139,14 @@ def read_by_config():
     return set(re.findall(r'env_\w+\("(\w+)"', (HERE / "config.py").read_text()))
 
 
-def test_app_reads_every_env_var_compose_sets(backend_svc):
-    # a name that's slightly off (DB_PATH vs CHROMA_PATH) would be silently ignored
-    assert set(backend_svc["environment"]) <= read_by_config()
+def test_app_reads_every_env_var_compose_sets():
+    # a name that's slightly off (DB_PATH vs CHROMA_PATH) would be silently
+    # ignored. Checked as written, since the merged environment also has
+    # anything else in .env, like OLLAMA_HOST_PORT
+    raw = yaml.safe_load((HERE / "docker-compose.yml").read_text())
+    names = {item.split("=", 1)[0] for item in raw["services"]["backend"]["environment"]}
+    assert names == {"OLLAMA_URL", "CHROMA_PATH"}
+    assert names <= read_by_config()
 
 
 # ── env_file ───────────────────────────────────────────────────────────────

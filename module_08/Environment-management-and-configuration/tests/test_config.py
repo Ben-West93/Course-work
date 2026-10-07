@@ -1,7 +1,9 @@
 import os
+import re
 import shutil
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
@@ -137,6 +139,37 @@ def test_ollama_url_needs_a_scheme(env, raw):
         env(OLLAMA_URL=raw)
 
 
+# ── names with the wrong case ──────────────────────────────────────────────
+
+@pytest.mark.parametrize("key", ["model_name", "Model_Name", "debug", "max_RESULTS", "ollama_url"])
+def test_wrong_case_warns_and_is_ignored(env, monkeypatch, key):
+    monkeypatch.setenv(key, "llama3.2:3b")
+    with pytest.warns(UserWarning, match=f"{key} is set, but config.py reads {key.upper()}"):
+        s = env()
+    assert vars(s) == DEFAULTS
+
+
+@pytest.mark.parametrize("key", ["MODEL", "model", "OLLAMA_HOST", "OLLAMA_HOST_PORT", "debug_mode", "DEBUGGING"])
+def test_other_names_dont_warn(env, monkeypatch, key):
+    # .env can hold names for compose and ollama, only near misses are flagged
+    monkeypatch.setenv(key, "x")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        env()
+
+
+def test_right_names_dont_warn(env):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        env(MODEL_NAME="llama3.2:3b", DEBUG="true")
+
+
+def test_names_list_matches_what_settings_reads():
+    # NAMES is only used for the warning, so it has to be kept in step by hand
+    read = set(re.findall(r'env_\w+\("(\w+)"', (HERE / "config.py").read_text()))
+    assert set(config.NAMES) == read == set(KEYS)
+
+
 # ── repr and the singleton ─────────────────────────────────────────────────
 
 def test_repr_lists_every_setting_with_its_type(env):
@@ -195,6 +228,13 @@ def test_bad_value_in_env_file_stops_the_script(run_config):
     out = run_config("MAX_RESULTS=three\n")
     assert out.returncode != 0
     assert "ValueError: MAX_RESULTS must be a whole number, got 'three'" in out.stderr
+
+
+def test_wrong_case_in_env_file_warns(run_config):
+    out = run_config("model_name=llama3.2:3b\n")
+    assert out.returncode == 0
+    assert "UserWarning: model_name is set, but config.py reads MODEL_NAME" in out.stderr
+    assert "model_name           = 'llama3.2:1b' (str)" in out.stdout
 
 
 def test_env_file_is_found_from_another_directory(run_config, tmp_path):

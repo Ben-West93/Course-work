@@ -16,6 +16,7 @@ Usage pattern in other modules:
 """
 
 import os
+import warnings
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,6 +29,7 @@ from dotenv import load_dotenv
 # compose passes the values in as real env vars instead
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+NAMES = ("OLLAMA_URL", "MODEL_NAME", "CHROMA_PATH", "MAX_RESULTS", "CONFIDENCE_THRESHOLD", "DEBUG")
 TRUE_VALUES = {"true", "1", "yes", "on"}
 FALSE_VALUES = {"false", "0", "no", "off"}
 
@@ -81,6 +83,17 @@ def env_bool(name: str, default: str) -> bool:
     raise ValueError(f"{name} must be true or false, got {raw!r}")
 
 
+def warn_case_mismatches() -> None:
+    # env var names are case sensitive, so model_name=... is a separate variable
+    # and would be ignored without a word. Only names that match one of ours
+    # apart from case are flagged: .env also holds names meant for compose and
+    # ollama, so an unknown name on its own isn't a mistake
+    for key in os.environ:
+        if key not in NAMES and key.upper() in NAMES:
+            warnings.warn(f"{key} is set, but config.py reads {key.upper()} (names are case sensitive), "
+                          f"so it's ignored", stacklevel=3)
+
+
 class Settings:
     """
     Central configuration class. All values read from environment variables.
@@ -102,6 +115,7 @@ class Settings:
         # only ever say "disconnected"
         if not self.ollama_url.startswith(("http://", "https://")):
             raise ValueError(f"OLLAMA_URL must start with http:// or https://, got {self.ollama_url!r}")
+        warn_case_mismatches()
 
     def __repr__(self) -> str:
         """Print all settings for inspection."""

@@ -89,6 +89,25 @@ ollama:
 - `ollama` gets the same `env_file`, so `.env` configures the whole stack. Ollama ignores the app's settings (it reads `OLLAMA_HOST`, `OLLAMA_KEEP_ALIVE` and so on), but any of those put in `.env` would reach it. It has no `environment:` block, so it sees `.env` exactly as written. Because of that, any edit to `.env` also restarts Ollama, and the backend waits for its healthcheck again.
 - The project name is still `rag-stack`, so this reuses the previous exercise's volumes, including the pulled model.
 
+## Gotchas
+
+- **`$` in a value.** Compose reads `$name` in `.env` as a variable, python-dotenv doesn't, so the same line can give two different values. Checked with `docker-compose run`:
+
+  | In `.env` | `python config.py` | In the container |
+  |---|---|---|
+  | `pa$word` or `"pa$word"` | `pa$word` | `pa` |
+  | `pa$$word` | `pa$$word` | `pa$word` |
+  | `'pa$word'` | `pa$word` | `pa$word` |
+
+  Single-quote anything with a `$`. `${HOME}` gets filled in from the Mac by both, so a path built from it is a Mac path inside the container. Quotes, inline comments, `export`, spaces around `=`, CRLF line endings and a BOM all came out the same in both.
+- **Names are case sensitive.** `model_name=` is a different variable from `MODEL_NAME` and does nothing. `config.py` warns when one of the six is set with the wrong case (`UserWarning: model_name is set, but config.py reads MODEL_NAME`), locally and in `docker-compose logs`. A different name altogether, like `MODEL=`, isn't flagged, because `.env` also holds names meant for compose and Ollama. `python config.py` or `/stats` shows what was actually loaded.
+- **Ollama reads `.env` too.** Its own settings (`OLLAMA_HOST`, `OLLAMA_MODELS`, `OLLAMA_KEEP_ALIVE` and the rest of `ollama serve --help`) take effect if they're in `.env`. None of the app's six names are on that list. `OLLAMA_HOST=127.0.0.1:11434` would make Ollama listen only inside its own container. Its healthcheck would still pass, but the backend couldn't connect.
+- **What picks up what.** After editing `.env`, run `docker-compose up -d`. After editing the code or `config.py`, run `docker-compose up --build -d`. `docker-compose restart` picks up neither. Locally, `uvicorn --reload` only watches `.py` files, so restart it after editing `.env`. `--reload-include .env` also works, but only with the `watchfiles` package installed.
+- **`OLLAMA_HOST_PORT` can live in `.env`.** Compose also reads `.env` to fill in `${...}` in the YAML. So with Ollama running on the Mac, `OLLAMA_HOST_PORT=11435` in `.env` saves putting it in front of every command. `test_compose.py` passes `--env-file` so its port checks still see the defaults.
+- **`.gitignore` only stops untracked files.** If `.env` was ever committed, it needs `git rm --cached .env`. Any secret that was in it should be changed, because the history keeps it.
+- **Everything in `.env` can be read.** `docker-compose config` and `docker inspect` print every value in plain text. `python config.py`, `/stats` and the `DEBUG` startup log print every setting. There are no secrets yet. When one is added, it needs masking in `__repr__` and leaving out of `/stats`.
+- **The ports are open to the network.** Compose publishes on all interfaces (`0.0.0.0:8000` and `0.0.0.0:11435` in `docker-compose ps`). With `DEBUG=true`, anyone on the same network can read `/stats` and get tracebacks. Writing the port as `"127.0.0.1:8000:8000"` keeps it to this machine.
+
 ## API reference
 
 Swagger UI (http://localhost:8000/docs) and ReDoc (`/redoc`) are generated from the same models as below. Every field has a description, the limits and defaults are in the schema, and every error code has an example (`test_docs_and_routing.py` checks all of this, including that the error examples match the real responses). The defaults shown there are whatever `MAX_RESULTS` and `CONFIDENCE_THRESHOLD` were loaded at startup. The examples here are real responses from the stack.
@@ -334,14 +353,14 @@ Both containers were recreated from the same images, nothing was rebuilt, and `m
 
 ```
 pip install -r requirements.txt -r requirements-dev.txt
-pytest                                                        # 372 passed, 16 skipped
+pytest                                                        # 386 passed, 16 skipped
 RAG_API_URL=http://localhost:8000 pytest tests/test_live.py   # 16 passed, stack up
 ```
 
 `conftest.py` sets all six variables before the app is imported, so a local `.env` (with `DEBUG=true`, for example) can't change what the tests see. New or changed for this exercise:
 
-- `test_config.py` (80): defaults and types, every casting rule above, blank values, `repr`, a single shared `settings`, and `config.py` run as a script in a temp folder (no `.env`, with `.env`, shell beating `.env`, a bad value in `.env`, started from another directory). It also checks the ignore files and that `.env.example` matches the defaults. Two more run the app with `DEBUG=true` and `false` in a separate process: logger level, the settings logged at startup, and the traceback (or not) in a 500
-- `test_compose.py` (25): `env_file` on both services, `.env` values reaching the containers, `environment:` beating them, every setting `config.py` reads reaching the backend, the Dockerfile copying `config.py`. Skipped without a `.env`
+- `test_config.py` (94): defaults and types, every casting rule above, blank values, the wrong-case warning (and no warning for other names), `repr`, a single shared `settings`, and `config.py` run as a script in a temp folder (no `.env`, with `.env`, shell beating `.env`, a bad value in `.env`, started from another directory). It also checks the ignore files and that `.env.example` matches the defaults. Two more run the app with `DEBUG=true` and `false` in a separate process: logger level, the settings logged at startup, and the traceback (or not) in a 500
+- `test_compose.py` (25): `env_file` on both services, `.env` values reaching the containers, `environment:` beating them, every setting `config.py` reads reaching the backend, the Dockerfile copying `config.py`. Skipped without a `.env`, and not affected by `OLLAMA_HOST_PORT` or other extra names in it
 - `test_health_stats.py` (40): `model_pulled` for pulled, missing, untagged, case-different and registry model names, 7 unreadable `/api/tags` bodies, settings changes reaching `/stats`, `/health` and the Ollama call, `/stats` types, `CHROMA_PATH` resolution
 - `test_ask.py` (104): `n_results` and `max_distance` defaulting to `MAX_RESULTS` and `CONFIDENCE_THRESHOLD` (a chunk at 1.0 kept, at 1.0001 dropped), debug log lines, none when `DEBUG` is off
 - `test_confidence.py` (72): made-up links, the level not depending on the cutoff, off-topic questions at `max_distance` 4 staying `low`, and the real cases from the cutoff check
