@@ -1,0 +1,40 @@
+# .dockerignore
+# Everything listed here is left out of the build context, so it never
+# reaches the daemon and a COPY can't put it in the image by mistake.
+# Smaller context = faster builds too.
+
+# Python cache, gets regenerated in the container anyway. Patterns here only
+# match at the top of the context, so **/ is needed to catch tests/__pycache__
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# tests run outside the image, nothing in the container needs them
+tests/
+pytest.ini
+requirements-dev.txt
+.pytest_cache/
+
+# local venvs are built for macOS and wouldn't run on the linux image
+venv/
+.venv/
+env/
+
+# repo history and git config don't belong in the image
+.git/
+.gitignore
+
+# secrets. Anything copied into a layer can be read by whoever has the
+# image, so pass these at run time with -e or --env-file instead
+.env
+
+# local ChromaDB data, rebuilt inside the container with POST /ingest
+chroma_data/
+rag_db/
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/

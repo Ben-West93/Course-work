@@ -1,0 +1,54 @@
+# docker-compose.yml  (STARTER)
+# ================================
+# Run:   docker-compose up --build
+# Stop:  docker-compose down
+# Exec:  docker-compose exec ollama ollama pull llama3.2:1b
+
+# TODO: Set the Compose file version (use "3.8" or omit for latest)
+version: "3.8"
+
+services:
+
+  # ── Backend service (FastAPI RAG API) ──────────────────────────────────
+  backend:
+    # TODO: build: .   ← build from Dockerfile in the current directory
+    build: # TODO
+
+    # TODO: Map host port 8000 to container port 8000
+    ports:
+      - # TODO
+
+    environment:
+      # IMPORTANT: Use the service name "ollama" as the hostname,
+      # NOT localhost — containers communicate via Docker's internal network.
+      # TODO: - OLLAMA_URL=http://ollama:11434
+      - # TODO
+      # TODO: Add CHROMA_PATH and any other settings from your config
+
+    volumes:
+      # TODO: Mount a named volume for ChromaDB data
+      # Pattern: <volume_name>:/app/rag_db
+      - # TODO
+
+    depends_on:
+      # TODO: List "ollama" so Compose starts Ollama before the backend
+      - # TODO
+
+  # ── Ollama service (local LLM runtime) ────────────────────────────────
+  ollama:
+    image: ollama/ollama   # Official Ollama image — no Dockerfile needed
+
+    # TODO: Map host port 11434 to container port 11434
+    ports:
+      - # TODO
+
+    volumes:
+      # TODO: Mount a named volume to persist downloaded models across restarts
+      # Ollama stores models at /root/.ollama inside the container
+      - # TODO
+
+# ── Named volumes ──────────────────────────────────────────────────────────
+# Declare all named volumes here so Docker manages them.
+volumes:
+  # TODO: chroma_data:
+  # TODO: ollama_models:

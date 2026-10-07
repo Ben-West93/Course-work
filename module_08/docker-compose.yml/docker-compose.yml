@@ -1,0 +1,58 @@
+# docker-compose.yml
+# ================================
+# Run:   docker-compose up --build
+# Stop:  docker-compose down
+# Exec:  docker-compose exec ollama ollama pull llama3.2:1b
+
+# Compose v2+ ignores this and prints a warning, kept because the exercise asks for it
+version: "3.8"
+
+# without this the project name comes from the folder, and "docker-compose.yml"
+# turns into "docker-composeyml", which ends up in every container and volume name
+name: rag-stack
+
+services:
+
+  # ── Backend service (FastAPI RAG API) ──────────────────────────────────
+  backend:
+    build: .
+
+    ports:
+      - "8000:8000"
+
+    environment:
+      # Compose puts both services on one network and registers each service
+      # name in Docker's DNS, so "ollama" resolves to the ollama container.
+      # localhost here would be the backend container itself
+      - OLLAMA_URL=http://ollama:11434
+      - DB_PATH=/app/rag_db
+
+    volumes:
+      # chroma writes here, so ingested chunks outlive the container
+      - chroma_data:/app/rag_db
+
+    # only controls start order. Compose doesn't wait for Ollama to actually be
+    # listening, but /health checks it on every call so a slow boot just shows
+    # "disconnected" for a second or two
+    depends_on:
+      - ollama
+
+  # ── Ollama service (local LLM runtime) ────────────────────────────────
+  ollama:
+    image: ollama/ollama
+
+    # the backend talks to ollama over the internal network and doesn't need
+    # this. It's here so ollama can also be reached from the Mac on :11434
+    ports:
+      - "11434:11434"
+
+    volumes:
+      # pulled models live in /root/.ollama/models, ~1.3GB for llama3.2:1b
+      - ollama_models:/root/.ollama
+
+# ── Named volumes ──────────────────────────────────────────────────────────
+# Docker manages these outside the containers. docker-compose down removes the
+# containers and the network but leaves volumes alone, only down -v deletes them
+volumes:
+  chroma_data:
+  ollama_models:
