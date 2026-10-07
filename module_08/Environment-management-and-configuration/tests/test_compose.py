@@ -81,11 +81,18 @@ def test_ports_match_the_exercise_by_default(backend_svc, ollama_svc):
     assert ports(ollama_svc) == [("11434", 11434)]
 
 
+def test_ports_are_only_published_on_loopback(backend_svc, ollama_svc):
+    # without a host_ip Docker listens on 0.0.0.0, i.e. the whole network
+    for service in (backend_svc, ollama_svc):
+        assert [p.get("host_ip") for p in service["ports"]] == ["127.0.0.1"]
+
+
 @pytest.mark.parametrize("host_port", ["11435", "21434"])
 def test_ollama_host_port_can_be_moved(host_port):
     services = compose_config(OLLAMA_HOST_PORT=host_port)["services"]
     # only the Mac side moves, the backend still talks to 11434 on the network
     assert ports(services["ollama"]) == [(host_port, 11434)]
+    assert services["ollama"]["ports"][0]["host_ip"] == "127.0.0.1"
     assert services["backend"]["environment"]["OLLAMA_URL"] == "http://ollama:11434"
 
 

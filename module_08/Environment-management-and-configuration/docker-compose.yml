@@ -18,8 +18,12 @@ services:
   backend:
     build: .
 
+    # 127.0.0.1 publishes the port on the Mac's loopback only. Without it
+    # Docker listens on every interface, so anyone on the same network could
+    # reach the API (and get tracebacks with DEBUG=true). This is the Mac side
+    # only, uvicorn inside the container still has to listen on 0.0.0.0
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
     # every KEY=value line in .env becomes an env var in the container, which
     # config.py reads. Compose only reads the file when it creates the
@@ -63,8 +67,9 @@ services:
     # this. It's here so ollama can also be reached from the Mac on :11434.
     # If Ollama is already running on the Mac, start with
     # OLLAMA_HOST_PORT=11435 docker-compose up -d instead of stopping it
+    # loopback only as well, see the backend's ports
     ports:
-      - "${OLLAMA_HOST_PORT:-11434}:11434"
+      - "127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434"
 
     volumes:
       # pulled models live in /root/.ollama/models, ~1.3GB for llama3.2:1b

@@ -106,7 +106,7 @@ ollama:
 - **`OLLAMA_HOST_PORT` can live in `.env`.** Compose also reads `.env` to fill in `${...}` in the YAML. So with Ollama running on the Mac, `OLLAMA_HOST_PORT=11435` in `.env` saves putting it in front of every command. `test_compose.py` passes `--env-file` so its port checks still see the defaults.
 - **`.gitignore` only stops untracked files.** If `.env` was ever committed, it needs `git rm --cached .env`. Any secret that was in it should be changed, because the history keeps it.
 - **Everything in `.env` can be read.** `docker-compose config` and `docker inspect` print every value in plain text. `python config.py`, `/stats` and the `DEBUG` startup log print every setting. There are no secrets yet. When one is added, it needs masking in `__repr__` and leaving out of `/stats`.
-- **The ports are open to the network.** Compose publishes on all interfaces (`0.0.0.0:8000` and `0.0.0.0:11435` in `docker-compose ps`). With `DEBUG=true`, anyone on the same network can read `/stats` and get tracebacks. Writing the port as `"127.0.0.1:8000:8000"` keeps it to this machine.
+- **The ports only listen on this machine.** Both are published as `127.0.0.1:<port>`. Without that, Docker listens on every interface, and with `DEBUG=true` anyone on the same network could read `/stats` and get tracebacks. `docker-compose ps` shows `127.0.0.1:8000->8000/tcp`. `localhost:8000` works, but `http://<the Mac's IP>:8000` is refused (checked from the Mac's own network address). To reach the API from another device, remove the `127.0.0.1:` and turn `DEBUG` off. This is only the Mac side: uvicorn inside the container still listens on `0.0.0.0`, otherwise nothing coming through the port mapping would reach it.
 
 ## API reference
 
@@ -353,14 +353,14 @@ Both containers were recreated from the same images, nothing was rebuilt, and `m
 
 ```
 pip install -r requirements.txt -r requirements-dev.txt
-pytest                                                        # 386 passed, 16 skipped
+pytest                                                        # 387 passed, 16 skipped
 RAG_API_URL=http://localhost:8000 pytest tests/test_live.py   # 16 passed, stack up
 ```
 
 `conftest.py` sets all six variables before the app is imported, so a local `.env` (with `DEBUG=true`, for example) can't change what the tests see. New or changed for this exercise:
 
 - `test_config.py` (94): defaults and types, every casting rule above, blank values, the wrong-case warning (and no warning for other names), `repr`, a single shared `settings`, and `config.py` run as a script in a temp folder (no `.env`, with `.env`, shell beating `.env`, a bad value in `.env`, started from another directory). It also checks the ignore files and that `.env.example` matches the defaults. Two more run the app with `DEBUG=true` and `false` in a separate process: logger level, the settings logged at startup, and the traceback (or not) in a 500
-- `test_compose.py` (25): `env_file` on both services, `.env` values reaching the containers, `environment:` beating them, every setting `config.py` reads reaching the backend, the Dockerfile copying `config.py`. Skipped without a `.env`, and not affected by `OLLAMA_HOST_PORT` or other extra names in it
+- `test_compose.py` (26): ports published on `127.0.0.1` only, `env_file` on both services, `.env` values reaching the containers, `environment:` beating them, every setting `config.py` reads reaching the backend, the Dockerfile copying `config.py`. Skipped without a `.env`, and not affected by `OLLAMA_HOST_PORT` or other extra names in it
 - `test_health_stats.py` (40): `model_pulled` for pulled, missing, untagged, case-different and registry model names, 7 unreadable `/api/tags` bodies, settings changes reaching `/stats`, `/health` and the Ollama call, `/stats` types, `CHROMA_PATH` resolution
 - `test_ask.py` (104): `n_results` and `max_distance` defaulting to `MAX_RESULTS` and `CONFIDENCE_THRESHOLD` (a chunk at 1.0 kept, at 1.0001 dropped), debug log lines, none when `DEBUG` is off
 - `test_confidence.py` (72): made-up links, the level not depending on the cutoff, off-topic questions at `max_distance` 4 staying `low`, and the real cases from the cutoff check
