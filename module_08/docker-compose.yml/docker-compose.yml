@@ -31,24 +31,37 @@ services:
       # chroma writes here, so ingested chunks outlive the container
       - chroma_data:/app/rag_db
 
-    # only controls start order. Compose doesn't wait for Ollama to actually be
-    # listening, but /health checks it on every call so a slow boot just shows
-    # "disconnected" for a second or two
+    # a plain "- ollama" only waits for the container to start, not for Ollama
+    # to be listening, so /health could say "disconnected" for the first few
+    # seconds. service_healthy waits for the healthcheck below to pass first
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
 
   # ── Ollama service (local LLM runtime) ────────────────────────────────
   ollama:
     image: ollama/ollama
 
     # the backend talks to ollama over the internal network and doesn't need
-    # this. It's here so ollama can also be reached from the Mac on :11434
+    # this. It's here so ollama can also be reached from the Mac on :11434.
+    # If Ollama is already running on the Mac, start with
+    # OLLAMA_HOST_PORT=11435 docker-compose up -d instead of stopping it
     ports:
-      - "11434:11434"
+      - "${OLLAMA_HOST_PORT:-11434}:11434"
 
     volumes:
       # pulled models live in /root/.ollama/models, ~1.3GB for llama3.2:1b
       - ollama_models:/root/.ollama
+
+    # ollama list fails until the server is answering. Checks every second
+    # while starting up, then every 30s once it's healthy
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
 
 # ── Named volumes ──────────────────────────────────────────────────────────
 # Docker manages these outside the containers. docker-compose down removes the

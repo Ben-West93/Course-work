@@ -18,6 +18,13 @@ RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# chroma downloads its embedding model (all-MiniLM-L6-v2) the first time it
+# embeds anything. Doing that here puts it in the image, so new containers
+# don't fetch it again and /ingest works without internet. Chroma only checks
+# for the extracted files, so the 79MB archive can go in the same RUN
+RUN python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; DefaultEmbeddingFunction()(['warm up'])" \
+    && rm /root/.cache/chroma/onnx_models/all-MiniLM-L6-v2/onnx.tar.gz
+
 COPY my_rag_api.py .
 COPY docs/ ./docs
 
