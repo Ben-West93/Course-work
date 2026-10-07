@@ -10,6 +10,11 @@
 # Compose v2+ ignores this and prints a warning, kept because the exercise asks for it
 version: "3.8"
 
+# without this the project name comes from the folder, and renaming the folder
+# would mean new, empty volumes (re-index and a 1.3GB re-pull). Pinned to the
+# name the folder already gives, so the existing volumes are kept
+name: containerizing-your-rag-application
+
 services:
 
   # ── Backend: FastAPI RAG API ───────────────────────────────────────────
@@ -46,8 +51,9 @@ services:
       ollama:
         condition: service_healthy
 
-    # python is the only thing in the slim image that can make a request.
-    # urlopen raises on the 503 /health gives when ChromaDB is broken
+    # shows up as (healthy)/(unhealthy) in docker-compose ps, nothing waits on
+    # it. python is the only thing in the slim image that can make a request,
+    # and urlopen raises on the 503 /health gives when ChromaDB is broken
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 30s
@@ -65,9 +71,11 @@ services:
       # the browser talks to Streamlit, and Streamlit's Python talks to the
       # backend from inside this container, so it uses the service name too
       - BACKEND_URL=http://backend:8000
+    # only waits for the backend to start, not to be healthy. The UI already
+    # shows when the backend is down, and waiting for healthy would stop it
+    # starting at all when ChromaDB is broken, the one case /health fails
     depends_on:
-      backend:
-        condition: service_healthy
+      - backend
 
   # ── Ollama: local LLM runtime ──────────────────────────────────────────
   ollama:

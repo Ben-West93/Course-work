@@ -76,10 +76,15 @@ def reindex():
 def ollama_hint(detail: str) -> str:
     if detail == "Ollama unavailable":
         return "Ollama isn't running. Start it with `docker-compose start ollama` and ask again."
-    if "for model" in detail:
+    # only a 404 means the model is missing. Any other code (400 for a bad
+    # model name, 500 for an error inside Ollama) has its cause in the log
+    if detail.startswith("Ollama returned 404"):
         return f"The model isn't pulled yet: `{MODEL_HINT}`"
     if "timed out" in detail:
         return "The model may still be loading. Give it a moment and ask again."
+    # ChromaDB's 503s come through here too
+    if detail.startswith("Ollama"):
+        return "Ollama's own error message is in `docker-compose logs backend`."
     return "Check `docker-compose logs backend` for the cause."
 
 
@@ -168,7 +173,9 @@ if result and result["kind"] == "answer":
     st.subheader("Answer")
     st.badge(f"Confidence: {confidence}", color=COLOURS[confidence])
     if answer:
-        st.markdown(answer)
+        # st.markdown reads $...$ as LaTeX, so with two dollar amounts in an
+        # answer the text between them would come out as maths
+        st.markdown(answer.replace("$", "\\$"))
     else:
         st.info("No answer returned")
     if confidence == "low" and sources:
