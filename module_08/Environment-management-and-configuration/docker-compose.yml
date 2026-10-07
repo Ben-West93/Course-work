@@ -50,10 +50,14 @@ services:
         condition: service_healthy
 
   # ── Ollama service (local LLM runtime) ────────────────────────────────
-  # no env_file here: ollama doesn't read any of the app's settings, and with
-  # it every edit to .env would also recreate this container
   ollama:
     image: ollama/ollama
+
+    # same file as the backend, so .env is the one place to configure the whole
+    # stack. Ollama ignores the app's settings (its own are OLLAMA_HOST,
+    # OLLAMA_KEEP_ALIVE, ...), but any of those added to .env would reach it.
+    # Like the backend, it's recreated by `docker-compose up -d` after .env changes
+    env_file: .env
 
     # the backend talks to ollama over the internal network and doesn't need
     # this. It's here so ollama can also be reached from the Mac on :11434.

@@ -143,11 +143,11 @@ def test_app_reads_every_env_var_compose_sets(backend_svc):
 
 # ── env_file ───────────────────────────────────────────────────────────────
 
-def test_backend_loads_env_file():
+def test_both_services_load_env_file():
     # `config` folds env_file into environment, so check the file as written
     raw = yaml.safe_load((HERE / "docker-compose.yml").read_text())
     assert raw["services"]["backend"]["env_file"] == ".env"
-    assert "env_file" not in raw["services"]["ollama"]
+    assert raw["services"]["ollama"]["env_file"] == ".env"
 
 
 def test_values_from_env_file_reach_the_backend(backend_svc):
@@ -167,8 +167,10 @@ def test_backend_gets_every_setting(backend_svc):
     assert read_by_config() <= set(backend_svc["environment"])
 
 
-def test_ollama_gets_none_of_the_app_settings(ollama_svc):
-    assert not read_by_config() & set(ollama_svc.get("environment") or {})
+def test_ollama_gets_env_file_as_is(ollama_svc):
+    # no environment: block on ollama, so nothing overrides the file there
+    env = {k: v for k, v in dotenv_values(HERE / ".env").items() if v}
+    assert {k: ollama_svc["environment"].get(k) for k in env} == env
 
 
 def test_dockerfile_serves_on_the_mapped_port(backend_svc):
