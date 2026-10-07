@@ -18,7 +18,6 @@ BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
 # the backend gives Ollama up to 120s, so wait a bit longer than that
 ASK_TIMEOUT = 150
 COLOURS = {"high": "green", "medium": "orange", "low": "red"}
-MODEL_HINT = "docker-compose exec ollama ollama pull llama3.2:1b"
 
 st.set_page_config(page_title="RAG Assistant", page_icon="🔍", layout="centered")
 
@@ -41,6 +40,26 @@ def error_detail(r: requests.Response) -> str:
         return "; ".join(str(e.get("msg", e)).removeprefix("Value error, ") if isinstance(e, dict) else str(e)
                          for e in detail)
     return str(detail or f"HTTP {r.status_code}")
+
+
+def pull_command(model: str) -> str:
+    # built from the model the backend reports, so it's still right when
+    # MODEL_NAME in .env is something other than llama3.2:1b
+    return f"docker-compose exec ollama ollama pull {model}"
+
+
+def code_span(text: str) -> str:
+    # inside `...` markdown doesn't apply and URLs aren't turned into links, so
+    # a file name shows exactly as written. A backtick would end the span early
+    return "`" + text.replace("`", "'") + "`"
+
+
+def answer_markdown(answer: str) -> str:
+    # st.markdown reads $...$ as LaTeX, so with two dollar amounts the text
+    # between them would come out as maths. Images are loaded as soon as the
+    # answer is shown, so an answer steered by a poisoned document could send
+    # data to any server in an image URL. Escaping "![" leaves it as text
+    return answer.replace("$", "\\$").replace("![", "!\\[")
 
 
 def fetch_health() -> dict | None:
@@ -78,8 +97,9 @@ def ollama_hint(detail: str) -> str:
         return "Ollama isn't running. Start it with `docker-compose start ollama` and ask again."
     # only a 404 means the model is missing. Any other code (400 for a bad
     # model name, 500 for an error inside Ollama) has its cause in the log
-    if detail.startswith("Ollama returned 404"):
-        return f"The model isn't pulled yet: `{MODEL_HINT}`"
+    if detail.startswith("Ollama returned 404 for model "):
+        model = detail.removeprefix("Ollama returned 404 for model ")
+        return f"The model isn't pulled yet: `{pull_command(model)}`"
     if "timed out" in detail:
         return "The model may still be loading. Give it a moment and ask again."
     # ChromaDB's 503s come through here too
@@ -137,7 +157,7 @@ with st.sidebar:
         elif health.get("ollama") != "connected":
             st.warning("Ollama isn't answering, so Ask will fail. `docker-compose start ollama`")
         elif not health.get("model_pulled"):
-            st.warning(f"Pull the model before asking: `{MODEL_HINT}`")
+            st.warning(f"Pull the model before asking: `{pull_command(health.get('model', 'llama3.2:1b'))}`")
         elif count == 0:
             st.info("Nothing ingested yet. Click Re-index Documents.")
 
@@ -173,9 +193,7 @@ if result and result["kind"] == "answer":
     st.subheader("Answer")
     st.badge(f"Confidence: {confidence}", color=COLOURS[confidence])
     if answer:
-        # st.markdown reads $...$ as LaTeX, so with two dollar amounts in an
-        # answer the text between them would come out as maths
-        st.markdown(answer.replace("$", "\\$"))
+        st.markdown(answer_markdown(answer))
     else:
         st.info("No answer returned")
     if confidence == "low" and sources:
@@ -186,7 +204,7 @@ if result and result["kind"] == "answer":
         if not sources:
             st.caption("No document was close enough to this question to use as context.")
         for s in sources:
-            st.markdown(f"**{s.get('source', 'unknown')}** · distance {s.get('distance', '?')}")
+            st.markdown(f"{code_span(str(s.get('source', 'unknown')))} · distance {s.get('distance', '?')}")
             st.text(s.get("text", ""))
 elif result:
     getattr(st, result["kind"])(result["message"])

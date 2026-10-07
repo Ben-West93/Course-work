@@ -46,10 +46,14 @@ services:
       - chroma_data:/app/rag_db
 
     # a plain "- ollama" only waits for the container to start, not for
-    # Ollama to answer. service_healthy waits for its healthcheck
+    # Ollama to answer. service_healthy waits for its healthcheck.
+    # required: false means that if Ollama never gets healthy, compose warns
+    # and starts the backend anyway instead of giving up on the whole stack.
+    # The API still serves /health (degraded), /ingest and /stats without it
     depends_on:
       ollama:
         condition: service_healthy
+        required: false
 
     # shows up as (healthy)/(unhealthy) in docker-compose ps, nothing waits on
     # it. python is the only thing in the slim image that can make a request,

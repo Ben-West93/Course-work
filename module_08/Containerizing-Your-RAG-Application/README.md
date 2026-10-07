@@ -37,7 +37,7 @@ ollama CLI ─ localhost:11434 ► ollama ────────────�
 - Compose puts all three on one network (`containerizing-your-rag-application_default`) and its DNS resolves each service name to that container. Inside a container `localhost` is the container itself, which is why the URLs use `backend` and `ollama`.
 - The browser only ever talks to Streamlit. The calls to `/health`, `/ingest` and `/ask` come from `app.py` running in the frontend container, so they go to `http://backend:8000`, not `localhost:8000`.
 - The published ports are only for the Mac: the UI, curl and the Ollama CLI. They're bound to `127.0.0.1`, so nothing else on the network can reach them. The containers still listen on `0.0.0.0` inside, otherwise the port mapping couldn't reach them.
-- Startup order: Ollama's healthcheck (`ollama list`) has to pass before the backend starts. A plain `depends_on: [ollama]` only waits for the container to exist, so the first requests could hit an Ollama that isn't listening yet.
+- Startup order: Ollama's healthcheck (`ollama list`) has to pass before the backend starts. A plain `depends_on: [ollama]` only waits for the container to exist, so the first requests could hit an Ollama that isn't listening yet. The dependency is `required: false`, so if Ollama never gets healthy, Compose prints `optional dependency "ollama" failed to start` and starts the backend anyway. Without that, one failing healthcheck left the backend and the frontend stuck at `Created`, even though the API works without Ollama (`/health` says degraded, `/ingest` and `/stats` work).
 - The frontend uses the plain `depends_on: [backend]` on purpose. The UI already shows when the backend is down, and waiting for the backend to be healthy would stop the frontend starting at all when ChromaDB is broken, the one case `/health` fails. The backend's healthcheck is still there for `docker-compose ps`.
 
 ## Running it
@@ -171,7 +171,7 @@ Embeds the question, fetches the `n_results` closest chunks, drops any further t
 | `n_results` | integer | no | `MAX_RESULTS` (3) | 1 to 20, strict: `true`, `"5"` and `5.0` are rejected |
 | `max_distance` | number | no | `CONFIDENCE_THRESHOLD` (1.0) | 0 to 4, strict, `NaN` and `Infinity` rejected |
 
-The blank check is a pydantic `@field_validator("question", mode="before")`. It runs before `min_length`, so `""`, `"   "` and `"\n\t"` all get the same `question must not be empty` message, and the 1000-character limit applies to the stripped text. A question that isn't a string is left for pydantic's own type error. Unknown fields are ignored.
+The blank check is a pydantic `@field_validator("question", mode="before")`. It runs before `min_length`, so `""`, `"   "` and `"\n\t"` all get the same `question must not be empty` message, and the 1000-character limit applies to the stripped text. It needs at least one character you could see, so a question made only of zero-width spaces, a BOM, null bytes or other control characters is blank too (`strip()` leaves those). Emoji or punctuation on their own count as a question and just find nothing. A question that isn't a string is left for pydantic's own type error. Unknown fields are ignored.
 
 The response always has all three fields, whatever happened:
 
@@ -336,7 +336,7 @@ http://localhost:8501. Streamlit reruns `app.py` from the top on every click, so
 
 - **Backend: connected ✓ / unreachable ✗**: from `GET /health` on every rerun. When it's unreachable, the caption says how to start it and the Re-index button is disabled.
 - **Chunks stored**: `document_count` from the same call.
-- **Ollama line**: `Ollama: connected · llama3.2:1b pulled`, `... not pulled`, or `Ollama: disconnected`. A yellow warning with the exact command appears when the model needs pulling (`docker-compose exec ollama ollama pull llama3.2:1b`) or Ollama needs starting (`docker-compose start ollama`), and a blue note when nothing has been ingested yet.
+- **Ollama line**: `Ollama: connected · llama3.2:1b pulled`, `... not pulled`, or `Ollama: disconnected`. A yellow warning with the exact command appears when the model needs pulling (`docker-compose exec ollama ollama pull <model>`, with the model the backend reports, so it's right when `MODEL_NAME` isn't llama3.2:1b) or Ollama needs starting (`docker-compose start ollama`), and a blue note when nothing has been ingested yet.
 - **Re-index Documents**: calls `POST /ingest` and shows `Ingested 32 chunks from 7 files` in green (yellow if `docs/` was empty). It's an `on_click` callback, which runs before the rerun, so the chunk count above it is already updated when the page redraws. The message stays in `session_state` until the next re-index.
 
 **Main area**
@@ -344,8 +344,8 @@ http://localhost:8501. Streamlit reruns `app.py` from the top on every click, so
 - Question box inside an `st.form`, so typing doesn't rerun the script and Enter submits. Limited to 1000 characters like the API. A blank question shows "Type a question first." without calling the backend.
 - **Ask** sends `POST /ask` with a spinner. The frontend waits 150s, a bit longer than the backend's 120s Ollama timeout.
 - **Confidence badge**: `st.badge`, green for `high`, orange for `medium`, red for `low`. A `low` answer with sources also gets a caption saying to check them.
-- **Answer** text, or "No answer returned" if it's somehow empty. `$` is escaped first: `st.markdown` reads `$...$` as LaTeX, so "costs $5 a month ... costs $10" would lose both dollar signs and show the text between them as maths.
-- **Sources (n)** expander: each source's file name and distance, then the chunk text. With no sources it says no document was close enough.
+- **Answer** text, or "No answer returned" if it's somehow empty. `$` is escaped first: `st.markdown` reads `$...$` as LaTeX, so "costs $5 a month ... costs $10" would lose both dollar signs and show the text between them as maths. `![` is escaped too, so an image in an answer shows as text instead of loading. Images load as soon as the answer appears, so an answer steered by a poisoned document could otherwise send data to any server in the image URL. Raw HTML is already shown as text by Streamlit and `javascript:` links come out as `#`.
+- **Sources (n)** expander: each source's file name as inline code and its distance, then the chunk text as plain text. Inside inline code markdown doesn't apply and URLs don't become links, so a file name shows exactly as written. With no sources it says no document was close enough.
 - The last answer is kept in `session_state`, so clicking Re-index doesn't clear it.
 
 **Errors**: every failure is an `st.error()` or `st.warning()` with what to do, never a traceback.
@@ -354,7 +354,7 @@ http://localhost:8501. Streamlit reruns `app.py` from the top on every click, so
 |---|---|
 | backend down or not started | sidebar unreachable, Ask: "Can't reach the backend at `http://backend:8000`. Check `docker-compose ps` and start it with `docker-compose up -d backend`." |
 | Ollama stopped | "**Ollama unavailable** (HTTP 503). Ollama isn't running. Start it with `docker-compose start ollama` and ask again." |
-| model not pulled | "**Ollama returned 404 for model llama3.2:1b** (HTTP 503). The model isn't pulled yet: `docker-compose exec ollama ollama pull llama3.2:1b`" |
+| model not pulled | "**Ollama returned 404 for model llama3.2:1b** (HTTP 503). The model isn't pulled yet: `docker-compose exec ollama ollama pull llama3.2:1b`". The command names the model from the error |
 | any other Ollama error, e.g. 400 for an invalid model name or 500 for an error inside Ollama | "**Ollama returned 500 for model llama3.2:1b** (HTTP 503). Ollama's own error message is in `docker-compose logs backend`." Only a 404 gets the pull command |
 | Ollama timed out | the 503 detail plus "The model may still be loading" |
 | ChromaDB can't be read or searched | "**ChromaDB search failed** (HTTP 503). Check `docker-compose logs backend` for the cause." |
@@ -390,6 +390,13 @@ The first 13 came from the pre-check before building, the rest turned up afterwa
 | Re-index clicked twice at once | upsert with stable ids, both calls return 200 and the count stays 32 | two parallel `POST /ingest` |
 | folder renamed | the project name is pinned with `name:`, so the volumes keep their names. Without it a copy in `rag-app/` got `rag-app_chroma_data` and an empty `rag-app_ollama_models` (re-index and a 1.3GB re-pull). Changing only the case was always safe | `docker-compose config` in a copy of the folder, before and after pinning |
 | another module_08 stack running | the `docker-compose.yml` and `Environment-management-and-configuration` exercises also publish 8000, so `up` fails with `address already in use`. Run `docker-compose down` in the other folder first | read from their compose files |
+| invisible-only question (zero-width spaces, BOM, null byte, control characters) | 422 `question must not be empty`, shown as a warning in the UI | 30-case input run, before (200) and after (422) |
+| Ollama unhealthy at startup | `required: false`: Compose warns and starts the backend and the UI anyway | healthcheck forced to fail with an override file, before (both stuck at `Created`) and after |
+| Ollama restarted while answering | 503 `Ollama unavailable` for that request, the next one works | `docker-compose restart ollama` during a long `/ask` |
+| `MODEL_NAME` set to another model | sidebar and error show the pull command for that model | override with `MODEL_NAME=llama3.2:3b`, before (said llama3.2:1b) and after |
+| image, HTML or `javascript:` link in an answer, odd file name | no image loads, HTML shows as text, the link becomes `#`, the file name shows as written | hostile fake backend, with a listener on the image URL's port |
+| 10 questions at once, with a re-index in the middle | all 200, count stays 32. Ollama answers one at a time, so the tenth waited 14s | parallel requests |
+| phone-width screen | no sideways scrolling, the sidebar folds behind `»` | browser at 375px |
 
 ## Verification
 
@@ -444,6 +451,20 @@ llama3.2:1b    baf6a787fdff    1.3 GB    4 minutes ago
 
 The same run checked that a ChromaDB 503 and an Ollama 502 each get the right hint (5/5). Adding `name:` and changing the frontend's `depends_on` didn't recreate the backend or Ollama, and the volumes, the 32 chunks and the model were all kept. Every suite above was run again afterwards and passed.
 
+**Third round, from more angles**:
+
+| Angle | How | Found | Result after the fixes |
+|---|---|---|---|
+| old test suite | the previous exercise's 2,000-line pytest suite run against `main.py`, with 18 tests updated for deliberate changes (new 503 message, ambiguity rule, `model_pulled` bool, `.env` one folder up) and the new file layout | nothing else | 362 passed, plus its 16 live tests against the stack |
+| odd input | 30 payloads: invisible characters, lone surrogates, emoji, wrong content types, null and list bodies, a 10MB question, invalid UTF-8 | invisible-only questions got a 200 | all 4xx or 200 as expected, no 5xx |
+| security | hostile answers through a fake backend: `<script>`, `<img onerror>`, a `javascript:` link, a markdown image pointing at a listener, a file name with markdown in it | the image loaded by itself, the file name became a link | listener got no requests, no image or link in the sources |
+| load | 10 `/ask` at once and an `/ingest` in the middle | nothing | 11/11 200 |
+| failures | Ollama restarted mid-answer, Ollama unhealthy at startup, another `MODEL_NAME` | stack didn't start, pull command named the wrong model | 503 then recovery, stack starts with a warning, right model named |
+| README | every `curl` in this file run as written, and the backend run outside Docker from `backend/` on port 8010 with Ollama on the Mac | nothing | all 7 commands gave the documented status and fields, local run ingested 32 chunks and answered |
+| phone width | browser at 375px | nothing to fix (see Notes) | no sideways scrolling |
+
+Then everything was run again on a fresh `down` and `up --build`: API 12/12, 14/14, 16/16, 5/5, UI 11/11, 4/4, 4/4, plus the zero-width question in the UI.
+
 ## Notes
 
 - `version: "3.8"` makes Compose print `the attribute version is obsolete`. It's ignored, kept because the exercise asks for it.
@@ -453,6 +474,8 @@ The same run checked that a ChromaDB 503 and an Ollama 502 each get the right hi
 - `ollama/ollama` has no tag, so a later `docker-compose pull` can bring a newer Ollama. This was tested on 0.40.0. `ollama/ollama:0.40.0` would pin it. It's left untagged because the exercise asks for `ollama/ollama`.
 - The backend healthcheck calls `/health` every 30s, so `docker-compose logs backend` gets a `GET /health` line from `127.0.0.1` every 30s. `docker-compose logs backend | grep -v "GET /health"` hides them.
 - The frontend image sets `STREAMLIT_SERVER_HEADLESS`, turns off usage stats and hides the Deploy button.
+- Ollama answers one request at a time here, so questions queue. Ten at once took 1 to 14 seconds each. The backend gives up on Ollama after 120s, so a long queue would end in `Ollama timed out`.
+- On a phone the sidebar starts folded, so the backend status isn't visible until you open it. Errors still show under the question. Streamlit's own "Press Enter to submit form" hint sits over the end of the text while typing.
 
 ## Changes from the previous exercise
 

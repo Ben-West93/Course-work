@@ -126,7 +126,10 @@ class AskRequest(BaseModel):
     def question_not_empty(cls, v):
         if isinstance(v, str):
             v = v.strip()
-            if not v:
+            # strip() leaves zero-width spaces, BOMs, null bytes and other
+            # control characters, which are just as blank on screen. A question
+            # needs at least one character you could actually see
+            if not any(ch.isprintable() and not ch.isspace() for ch in v):
                 raise ValueError("question must not be empty")
         return v
 
