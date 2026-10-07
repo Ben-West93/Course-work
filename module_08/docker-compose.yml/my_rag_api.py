@@ -77,7 +77,8 @@ class AskRequest(BaseModel):
     # strict: without it pydantic quietly turns true into 1 and "5" into 5
     n_results: int = Field(
         3, ge=1, le=20, strict=True,
-        description="How many chunks to fetch from ChromaDB before the max_distance filter.",
+        description="How many chunks to fetch from ChromaDB. Fewer come back when some are past "
+                    "max_distance, blank, or repeat the text of a closer one.",
     )
     # Python's json parser accepts NaN and Infinity, so those need ruling out too
     max_distance: float = Field(
@@ -102,15 +103,17 @@ class AskRequest(BaseModel):
 
 
 class SourceChunk(BaseModel):
-    text: str = Field(description="The chunk that was given to the model as context.")
-    source: str = Field(description="File the chunk came from, or \"unknown\" if it has no source.")
+    text: str = Field(description="The chunk that was given to the model as context, trimmed. Never blank.")
+    source: str = Field(description="File the chunk came from, trimmed. \"unknown\" when it has no source "
+                                    "or the source is blank.")
     distance: float = Field(description="Distance from the question, rounded to 4 places. Lower is closer.")
 
 
 class AskResponse(BaseModel):
     answer: str = Field(description="The model's answer, or a fixed message when there was nothing to answer from.")
     sources: list[SourceChunk] = Field(
-        description="Closest first. Empty when nothing was stored or nothing was within max_distance."
+        description="Closest first, each text only once. Empty when nothing was stored or nothing "
+                    "was within max_distance."
     )
     confidence: Literal["high", "medium", "low"] = Field(
         description="How far to trust the answer. See the README for how it's worked out."
@@ -219,6 +222,16 @@ def load_documents(directory: str) -> list[dict]:
     return chunks
 
 
+def source_name(meta: dict | None) -> str:
+    # /ingest always stores the file name, but chroma also allows numbers and
+    # bools as metadata, and pydantic won't turn those into a str (that was a
+    # 500). A blank name says nothing about where the text came from
+    source = (meta or {}).get("source")
+    if source is None or isinstance(source, bool):
+        return "unknown"
+    return str(source).strip() or "unknown"
+
+
 def retrieve(query: str, n_results: int = 3, max_distance: float = 1.2) -> list[dict]:
     count = collection.count()
     if count == 0:
@@ -227,7 +240,7 @@ def retrieve(query: str, n_results: int = 3, max_distance: float = 1.2) -> list[
     # chroma errors if n_results is more than what's stored
     results = collection.query(query_texts=[query], n_results=min(n_results, count))
 
-    chunks = []
+    chunks, seen = [], set()
     for doc, meta, dist in zip(
         results["documents"][0], results["metadatas"][0], results["distances"][0], strict=True
     ):
@@ -235,15 +248,18 @@ def retrieve(query: str, n_results: int = 3, max_distance: float = 1.2) -> list[
         # likely noise than context, so it never reaches the prompt
         if dist > max_distance:
             continue
-        # /ingest always sets text and source, but anything added to the
-        # collection some other way might not
-        if not doc or not doc.strip():
+        # /ingest never stores blank text, but anything added to the
+        # collection some other way might
+        text = (doc or "").strip()
+        if not text:
             continue
-        chunks.append({
-            "text": doc.strip(),
-            "source": (meta or {}).get("source") or "unknown",
-            "distance": round(dist, 4),
-        })
+        # the same paragraph stored twice (in two files, or under another id)
+        # would fill two source slots with one piece of context. Results come
+        # back closest first, so the copy that's kept is the closest one
+        if text in seen:
+            continue
+        seen.add(text)
+        chunks.append({"text": text, "source": source_name(meta), "distance": round(dist, 4)})
     return chunks
 
 
@@ -332,6 +348,12 @@ def call_ollama(messages: list[dict]) -> str:
     return content.strip()
 
 
+def chroma_error(detail: str, cause: Exception) -> HTTPException:
+    # 503 like the Ollama errors, and the actual cause goes to the log
+    log.warning("ChromaDB failed, returning 503: %r", cause)
+    return HTTPException(status_code=503, detail=detail)
+
+
 def check_ollama_health() -> bool:
     try:
         r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
@@ -376,7 +398,9 @@ ASK_ERRORS = {
                    "thousands of levels deep.", "There was an error parsing the body"),
     502: error_doc("Ollama replied, but with no usable answer (bad JSON, empty text, or cut off part way).",
                    "Ollama returned an empty answer"),
-    503: error_doc("Ollama is unreachable, timed out, or returned an error, e.g. the model isn't pulled.",
+    503: error_doc("Ollama is unreachable, timed out, or returned an error, e.g. the model isn't pulled. "
+                   "Also when ChromaDB can't be read (`ChromaDB is not readable`) or searched "
+                   "(`ChromaDB search failed`).",
                    "Ollama service is unavailable"),
 }
 
@@ -404,11 +428,21 @@ def root():
     ),
 )
 def ask(req: AskRequest):
+    try:
+        stored = collection.count()
+    except Exception as e:
+        raise chroma_error("ChromaDB is not readable", e) from e
+
     # two different reasons for having nothing to answer from, so two messages
-    if collection.count() == 0:
+    if stored == 0:
         return AskResponse(answer=EMPTY_DB_ANSWER, sources=[], confidence="low")
 
-    chunks = retrieve(req.question, req.n_results, req.max_distance)
+    try:
+        chunks = retrieve(req.question, req.n_results, req.max_distance)
+    except Exception as e:
+        # the question is embedded in here too, so a broken embedding model
+        # ends up here as well as a broken db
+        raise chroma_error("ChromaDB search failed", e) from e
     if not chunks:
         return AskResponse(answer=NO_MATCH_ANSWER, sources=[], confidence="low")
 
@@ -423,6 +457,8 @@ def ask(req: AskRequest):
 @app.post(
     "/ingest",
     response_model=IngestResponse,
+    responses={503: error_doc("ChromaDB couldn't be written to. Calling `/ingest` again once it's "
+                              "back finishes the job.", "Could not write to ChromaDB")},
     summary="Load docs/ into ChromaDB",
     description=(
         "Splits every .txt and .md file in `docs/` into paragraph chunks and upserts them. "
@@ -442,17 +478,21 @@ def ingest():
 
     # ids are stable (filename_index), so re-ingesting overwrites instead of duplicating
     ids = [c["id"] for c in chunks]
-    collection.upsert(
-        documents=[c["text"] for c in chunks],
-        metadatas=[c["metadata"] for c in chunks],
-        ids=ids,
-    )
+    try:
+        collection.upsert(
+            documents=[c["text"] for c in chunks],
+            metadatas=[c["metadata"] for c in chunks],
+            ids=ids,
+        )
 
-    # upsert never deletes, so chunks from a file that was removed or got
-    # shorter would stick around and keep coming back as sources
-    stale = sorted(set(collection.get(include=[])["ids"]) - set(ids))
-    if stale:
-        collection.delete(ids=stale)
+        # upsert never deletes, so chunks from a file that was removed or got
+        # shorter would stick around and keep coming back as sources
+        stale = sorted(set(collection.get(include=[])["ids"]) - set(ids))
+        if stale:
+            collection.delete(ids=stale)
+    except Exception as e:
+        # every step here can be repeated, so a retry picks up where this stopped
+        raise chroma_error("Could not write to ChromaDB", e) from e
 
     files = len({c["metadata"]["source"] for c in chunks})
     message = f"Ingested {plural(len(chunks), 'chunk')} from {plural(files, 'file')}"
@@ -475,8 +515,7 @@ def stats():
     try:
         count = collection.count()
     except Exception as e:
-        log.warning("ChromaDB count failed: %r", e)
-        raise HTTPException(status_code=503, detail="ChromaDB is not readable") from e
+        raise chroma_error("ChromaDB is not readable", e) from e
     return StatsResponse(document_count=count, model=MODEL, db_path=DB_PATH)
 
 
