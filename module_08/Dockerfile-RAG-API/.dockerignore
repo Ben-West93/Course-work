@@ -3,11 +3,18 @@
 # reaches the daemon and a COPY can't put it in the image by mistake.
 # Smaller context = faster builds too.
 
-# Python cache, gets regenerated in the container anyway
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# Python cache, gets regenerated in the container anyway. Patterns here only
+# match at the top of the context, so **/ is needed to catch tests/__pycache__
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# tests run outside the image, nothing in the container needs them
+tests/
+pytest.ini
+requirements-dev.txt
+.pytest_cache/
 
 # local venvs are built for macOS and wouldn't run on the linux image
 venv/
