@@ -1,0 +1,31 @@
+# .dockerignore
+# Files and directories to exclude from the Docker build context.
+# Keeping the context small speeds up builds and avoids leaking secrets.
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment — never copy your local venv into the image
+venv/
+.venv/
+env/
+
+# Version control
+.git/
+.gitignore
+
+# Local environment secrets — NEVER copy these into an image
+.env
+
+# ChromaDB / vector store data — rebuilt inside the container via /ingest
+chroma_data/
+rag_db/
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
