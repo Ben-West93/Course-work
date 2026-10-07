@@ -1,0 +1,15 @@
+# left out of the build context, so COPY . . can't put them in the image
+
+# Docker reads the Dockerfile itself even when it's listed here
+Dockerfile*
+.dockerignore
+*.starter.py
+
+# local ChromaDB from running uvicorn outside Docker. The container's db is
+# the chroma_data volume, rebuilt with POST /ingest
+rag_db/
+
+**/__pycache__/
+**/*.pyc
+.env
+.DS_Store

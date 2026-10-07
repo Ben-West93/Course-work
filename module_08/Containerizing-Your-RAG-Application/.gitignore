@@ -1,0 +1,3 @@
+.env
+backend/rag_db/
+__pycache__/

@@ -1,0 +1,57 @@
+# docker-compose.yml  (STARTER)
+# ================================
+# Three-service RAG stack: backend (FastAPI) + frontend (Streamlit) + ollama
+#
+# Run:   docker-compose up --build
+# Model: docker-compose exec ollama ollama pull llama3.2:1b
+# Stop:  docker-compose down
+
+version: "3.8"
+
+services:
+
+  # ── Backend: FastAPI RAG API ───────────────────────────────────────────
+  backend:
+    # TODO: build from ./backend
+    build: # TODO
+    ports:
+      # TODO: 8000:8000
+      - # TODO
+    environment:
+      # Use Docker's internal network — service name as hostname
+      # TODO: OLLAMA_URL=http://ollama:11434
+      # TODO: CHROMA_PATH=/app/rag_db
+      - # TODO
+    volumes:
+      # TODO: named volume for ChromaDB persistence → /app/rag_db
+      - # TODO
+    depends_on:
+      - ollama
+
+  # ── Frontend: Streamlit UI ─────────────────────────────────────────────
+  frontend:
+    # TODO: build from ./frontend
+    build: # TODO
+    ports:
+      # TODO: 8501:8501
+      - # TODO
+    environment:
+      # TODO: BACKEND_URL=http://backend:8000
+      - # TODO
+    depends_on:
+      - backend
+
+  # ── Ollama: local LLM runtime ──────────────────────────────────────────
+  ollama:
+    image: ollama/ollama
+    ports:
+      # TODO: 11434:11434
+      - # TODO
+    volumes:
+      # TODO: named volume for model persistence → /root/.ollama
+      - # TODO
+
+# ── Named volumes ──────────────────────────────────────────────────────────
+volumes:
+  # TODO: chroma_data:
+  # TODO: ollama_models:
