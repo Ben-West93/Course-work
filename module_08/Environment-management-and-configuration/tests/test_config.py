@@ -205,6 +205,47 @@ def test_env_file_is_found_from_another_directory(run_config, tmp_path):
     assert "'llama3.2:3b'" in out.stdout
 
 
+# ── DEBUG in the app ───────────────────────────────────────────────────────
+# app and logger are set up on import, so this needs its own process
+
+APP_CHECK = """
+import logging, sys
+logging.basicConfig(level=logging.DEBUG, stream=sys.stdout, format="%(message)s")
+from fastapi.testclient import TestClient
+import my_rag_api as api
+
+@api.app.get("/boom")
+def boom():
+    raise RuntimeError("something broke")
+
+r = TestClient(api.app, raise_server_exceptions=False).get("/boom")
+print("debug", api.app.debug, logging.getLogger("uvicorn.error").level)
+print("status", r.status_code)
+print("body", r.text.replace(chr(10), " "))
+"""
+
+
+@pytest.mark.parametrize("debug", ["true", "false"])
+def test_debug_in_the_app(tmp_path, debug):
+    for name in ("config.py", "my_rag_api.py"):
+        shutil.copy(HERE / name, tmp_path / name)
+    env = {k: v for k, v in os.environ.items() if k not in KEYS}
+    env.update(DEBUG=debug, CHROMA_PATH=str(tmp_path / "db"))
+    out = subprocess.run([sys.executable, "-c", APP_CHECK], cwd=tmp_path, env=env,
+                         capture_output=True, text=True, timeout=120).stdout
+
+    assert "status 500" in out
+    if debug == "true":
+        assert "debug True 10" in out                        # logging.DEBUG
+        assert "Loaded Settings(" in out and "debug                = True (bool)" in out
+        assert "RuntimeError: something broke" in out       # traceback in the response
+    else:
+        assert "debug False 0" in out
+        assert "Loaded Settings(" not in out
+        assert "body Internal Server Error" in out
+        assert "something broke" not in out.split("body", 1)[1]
+
+
 # ── .env hygiene ───────────────────────────────────────────────────────────
 
 def lines(name):

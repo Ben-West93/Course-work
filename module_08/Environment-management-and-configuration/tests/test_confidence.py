@@ -115,6 +115,41 @@ def test_endpoint_refusal_is_low(client, ingested, ollama):
     assert body["confidence"] == "low"
 
 
+# ── confidence vs the cutoff (CONFIDENCE_THRESHOLD / max_distance) ─────────
+# despite the name, the setting only decides which chunks reach the model.
+# The 0.5 / 0.8 bands are fixed, so a looser or stricter cutoff mustn't make
+# the same chunks score differently
+
+@pytest.mark.parametrize("max_distance", [0.5, 1.0, 1.2, 4.0])
+def test_cutoff_doesnt_change_the_level(client, scripted, max_distance):
+    scripted(("ChromaDB stores vectors.", {"source": "a.md"}, 0.45),
+             ("Ollama runs models.", {"source": "b.md"}, 0.95))
+    body = client.post("/ask", json={"question": "q", "max_distance": max_distance}).json()
+    assert body["confidence"] == "high"
+
+
+@pytest.mark.parametrize("question", ["Give me a pancake recipe", "Is it safe?", "How do I run it locally?"])
+def test_loose_cutoff_lets_noise_through_but_it_stays_low(client, ingested, ollama, question):
+    # someone setting CONFIDENCE_THRESHOLD=4 sends off-topic chunks to the model
+    body = client.post("/ask", json={"question": question, "max_distance": 4}).json()
+    assert body["sources"]
+    assert min(s["distance"] for s in body["sources"]) > 1.2
+    assert body["confidence"] == "low"
+
+
+def test_unanswerable_question_stops_at_the_new_default(client, ingested, ollama):
+    # best match 1.1439. Under the old 1.2 default it reached the model, which
+    # refused (low). Under 1.0 it gets the fixed answer and no model call
+    body = client.post("/ask", json={"question": "Who created Ollama?"}).json()
+    assert body == {"answer": api.NO_MATCH_ANSWER, "sources": [], "confidence": "low"}
+    assert ollama.calls == []
+
+    ollama.answer = "I don't have enough information to say who created Ollama."
+    body = client.post("/ask", json={"question": "Who created Ollama?", "max_distance": 1.2}).json()
+    assert [s["distance"] for s in body["sources"]][:1] == [1.1439]
+    assert body["confidence"] == "low"
+
+
 # ── heading-only chunks (regression) ───────────────────────────────────────
 
 def test_no_chunk_is_just_a_heading():
@@ -212,3 +247,83 @@ def test_unknown_source_doesnt_change_confidence():
 
 def test_many_borderline_chunks_dont_add_up_to_more_confidence():
     assert compute_confidence(chunks(*[0.81 + i / 100 for i in range(20)])) == "low"
+
+
+# ── made-up links ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("answer, flagged", [
+    ("As stated in [embeddings.md](https://github.com/huggingface/transformers/blob/master/embbed.md).",
+     {"github.com"}),
+    ("See the [ChromaDB](https://chromadb.readthedocs.io/en/latest/) docs.", {"chromadb.readthedocs.io"}),
+    ("More at https://example.com.", {"example.com"}),
+    # the host is in the ollama.txt chunk, the path doesn't have to be
+    ("Send it to http://localhost:11434/api/chat", set()),
+    ("It listens on HTTP://LOCALHOST:11434.", set()),
+    # links inside the page aren't links to anywhere
+    ("[Source: embeddings.md](#embeddings)", set()),
+])
+def test_links_whose_host_isnt_in_the_sources(answer, flagged):
+    sources = [real_chunk("ollama.txt", 0.3, "Ollama is a tool")]
+    assert unsupported_specifics(answer, "q", sources) == flagged
+
+
+def test_correct_answer_with_a_made_up_link_drops_a_level():
+    # the answer is right, but the citation links to a file that doesn't exist.
+    # This was medium before links were checked
+    question = "What happens if I query with a different embedding model than I indexed with?"
+    sources = [real_chunk("embeddings.md", 0.5354, "The same embedding model")]
+    answer = ("If you query with a different embedding model than the one used for indexing, the search "
+              "results will be meaningless. This is because the search algorithm will be comparing vectors "
+              "from different spaces, which can lead to incorrect or irrelevant results.\n\nAs stated in the "
+              "[source: embeddings.md](https://github.com/huggingface/transformers/blob/master/embbed.md), "
+              "\"The same embedding model must be used for indexing and querying.\" This ensures that the "
+              "search results are consistent and accurate.")
+    assert compute_confidence(sources, answer, question) == "low"
+
+
+# ── the 1.0 cutoff (CONFIDENCE_THRESHOLD default) on real questions ────────
+# 26 questions asked at max_distance 1.0 and 1.2, see "Cutoff check" in the README
+
+def test_new_default_cuts_the_chunk_with_the_port(client, ingested, ollama):
+    # the closest chunk is about starting the server, the port is in the next
+    # one. At 1.2 the model answered 11434, at 1.0 it only got the first one
+    q = "What port does Ollama use?"
+    default = client.post("/ask", json={"question": q}).json()["sources"]
+    loose = client.post("/ask", json={"question": q, "max_distance": 1.2}).json()["sources"]
+    assert [s["distance"] for s in default] == [0.9469]
+    assert [s["distance"] for s in loose] == [0.9469, 1.0525]
+    assert "11434" in loose[1]["text"] and "11434" not in default[0]["text"]
+
+
+def test_refusal_after_the_port_chunk_was_cut_is_low():
+    answer = "I don't have enough information to provide the port number that Ollama uses."
+    sources = [real_chunk("ollama.txt", 0.9469, "Start the server")]
+    assert compute_confidence(sources, answer, "What port does Ollama use?") == "low"
+
+
+def test_made_up_feature_from_a_borderline_match_is_low():
+    # nothing in the docs about GPUs in ChromaDB, the model invented CUDA support
+    question = "Does ChromaDB support GPU indexing?"
+    sources = [real_chunk("chromadb.md", 0.982, "# ChromaDB")]
+    answer = ("ChromaDB supports GPU indexing through the use of CUDA kernels. This allows for faster "
+              "indexing and querying of large datasets. To enable GPU indexing, you need to create a GPU "
+              "index using the `chroma_index` command.")
+    assert unsupported_specifics(answer, question, sources) == {"CUDA"}
+    assert compute_confidence(sources, answer, question) == "low"
+
+
+@pytest.mark.parametrize("question, best", [
+    ("Who created Ollama?", 1.1439),
+    ("How much RAM does llama3.1:8b need?", 1.0334),
+    ("How do I restrict a ChromaDB search to one file?", 1.1187),
+    ("What distance threshold should I use?", 1.1044),
+    ("Compare Client and PersistentClient", 1.1044),
+])
+def test_questions_between_1_0_and_1_2_no_longer_reach_the_model(client, ingested, ollama, question, best):
+    # at 1.2 these got 3 refusals, a made-up search_path parameter and a
+    # half-invented comparison, all low. At 1.0 they get the fixed answer
+    body = client.post("/ask", json={"question": question}).json()
+    assert body == {"answer": api.NO_MATCH_ANSWER, "sources": [], "confidence": "low"}
+    assert ollama.calls == []
+    loose = client.post("/ask", json={"question": question, "max_distance": 1.2}).json()
+    assert loose["sources"][0]["distance"] == best

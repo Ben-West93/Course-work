@@ -63,12 +63,20 @@ if settings.debug:
     log.setLevel(logging.DEBUG)
     log.debug("Loaded %r", settings)
 
-# a relative CHROMA_PATH (the default ./rag_db) is taken from this file's folder,
-# so it's the same db no matter where uvicorn is started from. An absolute one,
-# like /app/rag_db from compose, is used as is (join drops BASE_DIR)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.normpath(os.path.join(BASE_DIR, settings.chroma_path))
 DOCS_DIR = os.path.join(BASE_DIR, "docs")
+
+
+def chroma_dir(path: str) -> str:
+    # a relative CHROMA_PATH (the default ./rag_db) is taken from this file's
+    # folder, so it's the same db no matter where uvicorn is started from. An
+    # absolute one, like /app/rag_db from compose, is used as is (join drops
+    # BASE_DIR). Nothing expands ~ in a value read from .env, without
+    # expanduser ~/rag_db would make a folder literally called "~"
+    return os.path.normpath(os.path.join(BASE_DIR, os.path.expanduser(path)))
+
+
+DB_PATH = chroma_dir(settings.chroma_path)
 
 # ── ChromaDB setup ─────────────────────────────────────────────────────────
 client = chromadb.PersistentClient(path=DB_PATH)
@@ -177,6 +185,8 @@ class HealthResponse(BaseModel):
     ollama: Literal["connected", "disconnected"] = Field(description="Whether Ollama answered on /api/tags.")
     document_count: int | None = Field(description="Chunks stored, null when ChromaDB can't be read.")
     model: str = Field(description="Ollama model used by /ask (MODEL_NAME).")
+    model_pulled: bool | None = Field(description="Whether `model` is in Ollama's list of pulled models. "
+                                                  "null when Ollama can't be reached.")
 
 
 class ErrorResponse(BaseModel):
@@ -286,6 +296,10 @@ def retrieve(query: str, n_results: int = settings.max_results,
 # its training data rather than the context
 SPECIFIC_NUMBER = re.compile(r"\d[\d,]*\d")
 ACRONYM = re.compile(r"\b[A-Z][A-Z0-9]+s?\b")
+# host (and port) of any http(s) link. The model sometimes cites a source with
+# a made-up link, e.g. a github URL for embeddings.md, which looks like a real
+# reference to whoever reads the answer
+URL_HOST = re.compile(r"https?://([\w.-]+(?::\d+)?)", re.IGNORECASE)
 # the system prompt tells the model to say it doesn't have enough information
 REFUSAL = re.compile(r"(\bnot|n['’]t|\bno)\b[^.]{0,40}\benough information\b", re.IGNORECASE)
 LEVELS = ["low", "medium", "high"]
@@ -298,7 +312,11 @@ def unsupported_specifics(answer: str, question: str, chunks: list[dict]) -> set
     acronyms = {a.rstrip("s") for a in ACRONYM.findall(answer)}
     # whole words only, otherwise "MIT" counts as found in "limit"
     acronyms = {a for a in acronyms if not re.search(rf"\b{re.escape(a)}s?\b", reference, re.IGNORECASE)}
-    return numbers | acronyms
+    # only the host is compared, so http://localhost:11434/api/chat is fine
+    # when a source mentions http://localhost:11434
+    hosts = {h.lower().rstrip(".") for h in URL_HOST.findall(answer)}
+    hosts = {h for h in hosts if h not in reference.lower()}
+    return numbers | acronyms | hosts
 
 
 def compute_confidence(chunks: list[dict], answer: str = "", question: str = "") -> str:
@@ -374,12 +392,30 @@ def chroma_error(detail: str, cause: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail=detail)
 
 
-def check_ollama_health() -> bool:
+def full_model_name(name: str) -> str:
+    # Ollama treats a name with no tag as :latest. Only the part after the
+    # last / counts, a registry like host:5000/model has a colon too
+    return name if ":" in name.rsplit("/", 1)[-1] else f"{name}:latest"
+
+
+def check_ollama_health() -> tuple[bool, bool | None]:
+    # returns (connected, model_pulled), model_pulled is None when unreachable
     try:
         r = requests.get(f"{settings.ollama_url}/api/tags", timeout=3)
-        return r.status_code == 200
     except requests.exceptions.RequestException:
-        return False
+        return False, None
+    if r.status_code != 200:
+        return False, None
+
+    # MODEL_NAME comes from .env now, so a typo or a model that was never
+    # pulled is easy to end up with. Ollama itself is fine then, but every
+    # /ask would be a 503, so /health shouldn't say ok
+    try:
+        pulled = {full_model_name(m[key]) for m in r.json()["models"] for key in ("name", "model") if key in m}
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        log.warning("Couldn't read the model list from Ollama /api/tags: %r", e)
+        return True, False
+    return True, full_model_name(settings.model_name) in pulled
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────
@@ -559,14 +595,14 @@ def stats():
                        "Swagger just leaves nulls out of examples.",
         "content": {"application/json": {"example": {
             "status": "error", "chromadb": "error", "ollama": "connected",
-            "document_count": None, "model": settings.model_name,
+            "document_count": None, "model": settings.model_name, "model_pulled": True,
         }}},
     }},
-    summary="Check ChromaDB and Ollama",
+    summary="Check ChromaDB, Ollama and the model",
     description=(
-        "`ok`: both work. `degraded` (still 200): ChromaDB works but Ollama doesn't, so "
-        "`/ingest` and retrieval work but `/ask` can't generate answers. `error` (503): "
-        "ChromaDB can't be read."
+        "`ok`: ChromaDB works, Ollama answers and MODEL_NAME is pulled. `degraded` (still 200): "
+        "ChromaDB works but Ollama is down or doesn't have the model, so `/ingest` and retrieval "
+        "work but `/ask` can't generate answers. `error` (503): ChromaDB can't be read."
     ),
 )
 def health(response: Response):
@@ -579,10 +615,10 @@ def health(response: Response):
         document_count = None
         chroma_ok = False
 
-    # ollama: /api/tags is cheap and doesn't load a model
-    ollama_ok = check_ollama_health()
+    # ollama: /api/tags is cheap, doesn't load a model and lists what's pulled
+    ollama_ok, model_pulled = check_ollama_health()
 
-    if chroma_ok and ollama_ok:
+    if chroma_ok and ollama_ok and model_pulled:
         status = "ok"
     elif chroma_ok:
         status = "degraded"  # can still ingest and retrieve, just can't answer
@@ -596,4 +632,5 @@ def health(response: Response):
         ollama="connected" if ollama_ok else "disconnected",
         document_count=document_count,
         model=settings.model_name,
+        model_pulled=model_pulled,
     )

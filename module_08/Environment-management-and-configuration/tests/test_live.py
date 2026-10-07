@@ -39,7 +39,8 @@ def test_root(http):
 
 def test_health_ok(http):
     body = http.get("/health").json()
-    assert body["status"] == "ok", "is the ollama service up? (docker-compose ps)"
+    assert body["status"] == "ok", "is the ollama service up and MODEL_NAME pulled? (docker-compose ps)"
+    assert body["model_pulled"] is True
     assert body["document_count"] == 32
 
 

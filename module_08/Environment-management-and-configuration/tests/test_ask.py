@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 import requests
 
@@ -395,3 +397,41 @@ def test_chroma_search_failure_is_503_and_logged(client, monkeypatch, ollama, ca
     assert r.json() == {"detail": "ChromaDB search failed"}
     assert "embedding model not found" in caplog.text
     assert ollama.calls == []
+
+
+# ── defaults from settings ─────────────────────────────────────────────────
+# conftest pins MAX_RESULTS=3 and CONFIDENCE_THRESHOLD=1.0, the config.py defaults
+
+def test_n_results_defaults_to_max_results(client, scripted):
+    scripted(*[(f"chunk {i}", {"source": "a.md"}, 0.1 * (i + 1)) for i in range(6)])
+    assert len(ask(client).json()["sources"]) == api.settings.max_results == 3
+
+
+def test_max_distance_defaults_to_confidence_threshold(client, scripted):
+    scripted(("close", {"source": "a.md"}, 0.9), ("at the cutoff", {"source": "b.md"}, 1.0),
+             ("just past it", {"source": "c.md"}, 1.0001))
+    assert [s["text"] for s in ask(client).json()["sources"]] == ["close", "at the cutoff"]
+    # the previous exercise's 1.2 can still be asked for per request
+    assert len(ask(client, max_distance=1.2).json()["sources"]) == 3
+
+
+# ── DEBUG logging ──────────────────────────────────────────────────────────
+
+def test_debug_logs_retrieval_and_ollama_timing(client, ingested, ollama, caplog):
+    caplog.set_level(logging.DEBUG, logger="uvicorn.error")
+    ask(client, "What is chunking?")
+    assert "chunks within 1.0 for 'What is chunking?': [('chunking.txt'," in caplog.text
+    assert "Ollama llama3.2:1b replied 200 in" in caplog.text
+
+
+def test_debug_logs_a_failed_ollama_status(client, ingested, ollama, caplog):
+    caplog.set_level(logging.DEBUG, logger="uvicorn.error")
+    ollama.reply(404, {"error": "model 'llama3.2:1b' not found"})
+    assert ask(client).status_code == 503
+    assert "Ollama llama3.2:1b replied 404 in" in caplog.text
+
+
+def test_no_debug_lines_by_default(client, ingested, caplog):
+    # DEBUG=false leaves the logger alone, so only warnings and up get through
+    ask(client, "What is chunking?")
+    assert "chunks within" not in caplog.text
