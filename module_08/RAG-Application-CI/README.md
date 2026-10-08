@@ -557,7 +557,7 @@ Every error body is JSON. App errors are `{"detail": "<message>"}`. 422s are `{"
 
 Python's JSON parser accepts `NaN`, `Infinity` and lone surrogates, but none of them can be written back out as JSON. FastAPI's default 422 handler echoes the bad input in the response, so those requests used to end in a 500. `main.py` registers its own handler that makes the echo safe first, and `test_ask_input_json_cant_echo_back_is_422_not_500` keeps it that way.
 
-`Ollama returned 500 for model ...` while running locally means Ollama itself couldn't run the model, and its own error is in the uvicorn log. On this Mac it was `llama-server process has terminated ... failed to initialize the Metal library`. The same model ran fine in the `ollama/ollama` container from the containerization exercise.
+`Ollama returned 500 for model ...` means the API reached Ollama but Ollama couldn't run the model, for example because its model process crashed while loading (on a Mac this can be a Metal/GPU error). Ollama's own error text is in the uvicorn log. If the same model works in the `ollama/ollama` container, the problem is the local Ollama install rather than the API.
 
 ## What would break CI, and what handles it
 
