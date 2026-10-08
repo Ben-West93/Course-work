@@ -19,7 +19,7 @@ RAG-Application-CI/
 │   ├── docs/                      7 .md/.txt files, 32 chunks once ingested
 │   └── tests/
 │       ├── __init__.py
-│       ├── test_api.py            47 tests, no Ollama or embedding model needed
+│       ├── test_api.py            68 tests, no Ollama or embedding model needed
 │       └── test_api.starter.py    course starter, kept as handed out
 ├── frontend/
 │   ├── Dockerfile                 built by the docker job
@@ -32,7 +32,7 @@ RAG-Application-CI/
 
 ## Where the workflow runs from
 
-GitHub only runs workflow files from `.github/workflows/` at the root of a repository. This project is a folder inside `Course-work`, so `.github/workflows/ci.yml` here is never picked up on its own. The copy that runs is [`/.github/workflows/rag-application-ci.yml`](../../.github/workflows/rag-application-ci.yml) at the repo root. It's the same workflow with three differences:
+GitHub only runs workflow files from `.github/workflows/` at the root of a repository. This project is a folder inside `Course-work`, so `.github/workflows/ci.yml` here is never picked up on its own. The copy that runs is [`/.github/workflows/rag-application-ci.yml`](../../.github/workflows/rag-application-ci.yml) at the repo root. It's the same workflow with these differences:
 
 | | `ci.yml` (this folder) | `rag-application-ci.yml` (repo root) |
 |---|---|---|
@@ -107,6 +107,8 @@ cd backend
 ../../../.venv/bin/pytest tests/ -v
 ```
 
+pytest finds `backend/pytest.ini` from whatever path it's given, so `pytest backend/tests` from the project folder and `.venv/bin/pytest module_08/RAG-Application-CI/backend/tests` from the repo root run the same tests.
+
 Or with any environment that has the backend requirements:
 
 ```bash
@@ -162,26 +164,47 @@ gh run watch --exit-status
 gh run view --log-failed
 ```
 
+## Notes and known limits
+
+- **Node 20 warning.** Every job gets an annotation saying `actions/checkout@v4` and `actions/setup-python@v5` target Node 20, which GitHub has deprecated, so they're forced onto Node 24. They still work. The exercise asks for these versions. `checkout@v5` and `setup-python@v6` are the Node 24 releases if the warning needs to go.
+- **`ubuntu-latest` is moving to Ubuntu 26** from October 19, 2026 (a notice on every job). `setup-python` already has a Python 3.11.17 build for 26.04, so the test and lint jobs should carry on as they are, but the runner's Docker version and system packages will change with it. `runs-on: ubuntu-24.04` would hold the runner image still if that ever matters.
+- **Formatting isn't checked.** The lint step keeps the starter's name, "Check code formatting", but `ruff check` is the linter. `ruff format --check backend/ frontend/` would currently want to reformat 4 files.
+- **The images are built, not started.** A Dockerfile with a broken `CMD` would still pass the docker job. Both images do start: run locally, the backend's `/health` answers 200 (`degraded`, there's no Ollama in the container) and the frontend's `/_stcore/health` answers `ok`. To check by hand after building the images locally (each needs a few seconds before it answers, a `curl` straight after `docker run -d` gets an empty reply):
+
+  ```bash
+  docker run -d --rm --name smoke-backend -p 127.0.0.1:18000:8000 rag-backend
+  docker run -d --rm --name smoke-frontend -p 127.0.0.1:18501:8501 rag-frontend
+  sleep 5
+  curl http://localhost:18000/health
+  curl http://localhost:18501/_stcore/health
+  docker stop smoke-backend smoke-frontend
+  ```
+
+- **The backend build needs the network.** It downloads Chroma's embedding model during `docker build`. If the docker job fails on that `RUN` line, look for a download error in the log before looking at the code, and re-run the job.
+- **`pytest` and `httpx` aren't pinned.** The test job installs the newest of each. The first run got pytest 9.1.1 and httpx 0.28.1, the same as the venv, but a new major release of either could fail the job with no code change. `pip install pytest==9.1.1 httpx==0.28.1` would stop that.
+- **The paths filter and required checks.** The root workflow only runs when something in this folder (or the workflow file) changes. If `test`, `docker` or `lint` were ever made required status checks on `main`, a PR that doesn't touch this folder would wait forever for checks that never start.
+
 ## The tests
 
-`backend/tests/test_api.py` has 47 tests (counting parametrized cases) and runs in under a second. The idea is to test the API layer only, so nothing in it needs Ollama, the internet or the embedding model:
+`backend/tests/test_api.py` has 68 tests (counting parametrized cases) and runs in under a second. The idea is to test the API layer only, so nothing in it needs Ollama, the internet or the embedding model:
 
 - `TestClient(app)` calls the app in-process through httpx. Each request still goes through routing, pydantic validation, the route and the exception handlers, just without uvicorn or a port.
 - An autouse fixture replaces `requests.get` and `requests.post` in every test with a function that raises `ConnectionError` straight away. Nothing reaches a real Ollama, even when one is running on the machine, and nothing hangs on a timeout in CI. Tests that need Ollama up use the `ollama` fixture, which returns canned `/api/tags` and `/api/chat` replies and records what was sent.
-- `/ask` and `/ingest` tests swap `main.collection` for a `FakeCollection` that returns scripted rows. A real chroma query would first download the 79MB embedding model. The three exercise tests (`test_root`, `test_health`, `test_stats`) use the real, empty `test_chroma` collection, which checks that chroma itself starts in CI.
+- `/ask` and `/ingest` tests swap `main.collection` for a `FakeCollection` that returns scripted rows. A real chroma query would first download the 79MB embedding model. The three exercise tests (`test_root`, `test_health`, `test_stats`) use the real, empty `test_chroma` collection, which checks that chroma itself starts in CI. Chroma's anonymized telemetry is on by default, but its `capture()` does nothing in 1.5.9, so opening the collection doesn't reach the network either.
+- Error replies from Ollama go through `ollama_replies(monkeypatch, reply)`, where `reply` is either a `FakeResponse` for `/api/chat` to return or an exception for `requests.post` to raise.
 
 | Group | Tests | Checks |
 |---|---|---|
 | Exercise | `test_root`, `test_health`, `test_stats` | 200s, `status`/`chromadb` in `/health`, `document_count` in `/stats` |
-| `/health`, `/stats` | 5 | `ok` with Ollama up, `degraded` (still 200) with it down, 503 + `document_count: null` with chroma broken, settings come from env, `/stats` 503 |
-| `/ask` valid | 4 | exact response shape (no nulls, distances rounded to 4 places and sorted), confidence `high`, payload sent to Ollama, empty db and no-match answers that skip Ollama |
-| `/ask` 422 | 12 | blank, whitespace, newline/tab and zero-width-space questions get the custom validator message; missing field, wrong type, too long, `n_results` 0/21/`"3"`, `max_distance` 4.5, malformed JSON |
-| `/ask` 503 | 4 | Ollama refused, timed out, model not pulled (404 from Ollama), chroma unreadable |
+| `/health`, `/stats` | 9 | `ok` with Ollama up; `degraded` (still 200) with Ollama down, another model pulled, only a bare `llama3.2` (that's `:latest`), a junk model list, or a 500 from `/api/tags`; 503 + `document_count: null` with chroma broken; settings come from env; `/stats` 503 |
+| `/ask` answers | 9 | exact response shape (no nulls, distances rounded to 4 places and sorted), confidence `high`, payload sent to Ollama, empty db and no-match answers that skip Ollama, question length 1000 and 1000-plus-spaces pass while 1001 fails, `n_results` capped at what's stored, duplicate and blank chunks dropped, missing metadata becomes `"unknown"` |
+| `/ask` 400, 422 | 16 | blank, whitespace, newline/tab and zero-width-space questions get the custom validator message; missing field, wrong type, too long, `n_results` 0/21/`"3"`, `max_distance` 4.5, malformed JSON; NaN, Infinity and a lone surrogate come back 422 instead of 500; a body that isn't UTF-8 is 400 |
+| `/ask` 502, 503 | 12 | Ollama refused, SSL error, timed out, too many redirects, model not pulled (404), model crashed (500); reply cut off, HTML instead of JSON, no message, blank answer (502); chroma unreadable; chroma search failing |
 | Confidence | 13 | distance thresholds, no chunks, two files nearly tied, refusal answer, unsupported number, plus borderline and ambiguous retrievals through `/ask` coming back `low` |
 | `/ingest` | 3 | `.md` and `.txt` loaded, other files skipped, headings merged, stale chunks removed; empty folder changes nothing; 503 when chroma can't be written |
 | Routing | 3 | wrong method is 405 |
 
-The suite was also run against five deliberately broken copies of `main.py`: borderline cutoff raised to 1.2, the Ollama 503 turned into a 500, the blank-question validator removed, the ambiguity check switched off, and `document_count` renamed. Each one made at least one test fail.
+The suite was also run against ten deliberately broken copies of `main.py`: borderline cutoff raised to 1.2, the Ollama 503 turned into a 500, the blank-question validator removed, the ambiguity check switched off, `document_count` renamed, the custom 422 handler removed, the `n_results` cap removed, the duplicate check removed, the empty-answer 502 turned into a 503, and the model-pulled check skipped. Each one made at least one test fail.
 
 ## API reference
 
@@ -334,7 +357,7 @@ Body (`Content-Type: application/json`):
 
 | Field | Type | Required | Default | Validation |
 |---|---|---|---|---|
-| `question` | string | yes | | Surrounding whitespace is stripped first (custom `mode="before"` validator). Has to contain at least one visible character, so `""`, `"   "`, `"\n\t"` and a lone zero-width space are rejected with `question must not be empty`. 1 to 1000 characters after stripping. A non-string is a type error |
+| `question` | string | yes | | Surrounding whitespace is stripped first (custom `mode="before"` validator). Has to contain at least one visible character, so `""`, `"   "`, `"\n\t"` a lone zero-width space and a lone surrogate are rejected with `question must not be empty`. 1 to 1000 characters after stripping. A non-string is a type error |
 | `n_results` | int | no | `MAX_RESULTS` (3) | 1 to 20. Strict, so `"3"` and `true` are rejected instead of converted |
 | `max_distance` | float | no | `CONFIDENCE_THRESHOLD` (1.0) | 0 to 4, squared L2 distance (0 identical, ~1.2 loosely related). Strict, and `NaN`/`Infinity` are rejected |
 
@@ -512,23 +535,29 @@ Every error body is JSON. App errors are `{"detail": "<message>"}`. 422s are `{"
 | 400 | `/ask` | body isn't valid UTF-8 | `{"detail": "There was an error parsing the body"}` |
 | 404 | any | unknown path | `{"detail": "Not Found"}` |
 | 405 | any | wrong method, e.g. `GET /ask` | `{"detail": "Method Not Allowed"}` |
-| 422 | `/ask` | blank or invisible-only question | `msg`: `Value error, question must not be empty` |
+| 422 | `/ask` | blank or invisible-only question (whitespace, zero-width space, a lone surrogate like `"\ud800"`) | `msg`: `Value error, question must not be empty` |
 | 422 | `/ask` | `question` missing | `type`: `missing` |
 | 422 | `/ask` | wrong type, e.g. `"question": 42`, `"n_results": "3"` or `"max_distance": "1.0"` | `type`: `string_type` / `int_type` / `float_type` |
 | 422 | `/ask` | out of range: question over 1000 chars, `n_results` outside 1-20, `max_distance` outside 0-4 | `type`: `string_too_long` / `greater_than_equal` / `less_than_equal` |
 | 422 | `/ask` | `max_distance` is `NaN` or `Infinity` | `type`: `finite_number` |
 | 422 | `/ask` | malformed JSON | `type`: `json_invalid` |
-| 502 | `/ask` | Ollama answered with no usable reply | `Ollama's response had no answer in it`, `Ollama returned an empty answer`, `Ollama's response was cut off` |
-| 503 | `/ask` | Ollama refused the connection | `{"detail": "Ollama unavailable"}` |
+| 502 | `/ask` | Ollama's reply was cut off part way | `{"detail": "Ollama's response was cut off"}` |
+| 502 | `/ask` | Ollama's reply isn't JSON, or has no `message.content` | `{"detail": "Ollama's response had no answer in it"}` |
+| 502 | `/ask` | the answer text is blank | `{"detail": "Ollama returned an empty answer"}` |
+| 503 | `/ask` | Ollama refused the connection. Also SSL and proxy errors, which requests treats as connection errors | `{"detail": "Ollama unavailable"}` |
 | 503 | `/ask` | Ollama took longer than 120s | `{"detail": "Ollama timed out"}` |
-| 503 | `/ask` | Ollama returned an error status, e.g. model not pulled | `{"detail": "Ollama returned 404 for model llama3.2:1b"}` |
-| 503 | `/ask` | any other request error | `{"detail": "Could not reach Ollama (<ExceptionName>)"}` |
+| 503 | `/ask` | Ollama returned an error status: 404 when the model isn't pulled, 500 when the model process crashed while loading | `{"detail": "Ollama returned 404 for model llama3.2:1b"}` |
+| 503 | `/ask` | any other request error, e.g. too many redirects | `{"detail": "Could not reach Ollama (TooManyRedirects)"}` |
 | 503 | `/ask`, `/stats` | ChromaDB can't be read | `{"detail": "ChromaDB is not readable"}` |
 | 503 | `/ask` | ChromaDB search (or embedding the question) failed | `{"detail": "ChromaDB search failed"}` |
 | 503 | `/ingest` | ChromaDB can't be written | `{"detail": "Could not write to ChromaDB"}` |
 | 503 | `/health` | ChromaDB can't be read | full health body with `"status": "error"` and `"document_count": null` |
 
 503 rather than 500 for the Ollama and ChromaDB failures: the API itself is fine, the service behind it isn't, and the same request can be retried once it's back. The cause the API saw (for example Ollama's own error text) goes to the uvicorn log, not to the client.
+
+Python's JSON parser accepts `NaN`, `Infinity` and lone surrogates, but none of them can be written back out as JSON. FastAPI's default 422 handler echoes the bad input in the response, so those requests used to end in a 500. `main.py` registers its own handler that makes the echo safe first, and `test_ask_input_json_cant_echo_back_is_422_not_500` keeps it that way.
+
+`Ollama returned 500 for model ...` while running locally means Ollama itself couldn't run the model, and its own error is in the uvicorn log. On this Mac it was `llama-server process has terminated ... failed to initialize the Metal library`. The same model ran fine in the `ollama/ollama` container from the containerization exercise.
 
 ## What would break CI, and what handles it
 

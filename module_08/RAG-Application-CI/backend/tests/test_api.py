@@ -49,22 +49,29 @@ ROWS = [
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, data=None):
+    # data is the JSON body. Pass text instead for a body that isn't JSON,
+    # json() then raises ValueError the way requests' own one does
+    def __init__(self, status_code=200, data=None, text=None):
         self.status_code = status_code
         self._data = data
-        self.text = json.dumps(data)
+        self.text = json.dumps(data) if text is None else text
 
     def json(self):
+        if self._data is None:
+            raise ValueError("Expecting value")
         return self._data
 
 
 class FakeCollection:
     # stands in for the chroma collection main.py opens at import. Nothing gets
-    # embedded, query() returns the rows it was given
-    def __init__(self, rows=(), stored_ids=(), broken=False):
+    # embedded, query() returns the rows it was given. A row with source None
+    # comes back with no metadata at all
+    def __init__(self, rows=(), stored_ids=(), broken=False, search_broken=False):
         self.rows = list(rows)
         self.ids = set(stored_ids)
         self.broken = broken
+        self.search_broken = search_broken
+        self.queried_with = None
 
     def _check(self):
         if self.broken:
@@ -76,10 +83,14 @@ class FakeCollection:
 
     def query(self, query_texts, n_results):
         self._check()
+        # count() still works, only the search (which embeds the question) fails
+        if self.search_broken:
+            raise RuntimeError("embedding model missing")
+        self.queried_with = n_results
         rows = self.rows[:n_results]
         return {
             "documents": [[text for text, _, _ in rows]],
-            "metadatas": [[{"source": source} for _, source, _ in rows]],
+            "metadatas": [[None if source is None else {"source": source} for _, source, _ in rows]],
             "distances": [[distance for _, _, distance in rows]],
         }
 
@@ -132,8 +143,25 @@ def ollama(monkeypatch):
     return sent
 
 
+def ollama_replies(monkeypatch, reply):
+    # reply is a FakeResponse for /api/chat to return, or an exception for
+    # requests.post to raise
+    def post(*args, **kwargs):
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(main.requests, "post", post)
+
+
 def ask(question="How does ChromaDB store embeddings?", **extra):
     return client.post("/ask", json={"question": question, **extra})
+
+
+def post_raw(body: str | bytes):
+    # for bodies client.post(json=...) won't send: httpx refuses NaN, and bytes
+    # that aren't valid UTF-8 can't come from a dict at all
+    return client.post("/ask", content=body, headers={"Content-Type": "application/json"})
 
 
 def assert_ask_shape(data):
@@ -208,6 +236,28 @@ def test_health_503_when_chromadb_is_broken(monkeypatch):
     assert data["document_count"] is None
 
 
+@pytest.mark.parametrize(
+    ("tags", "ollama_state"),
+    [
+        (FakeResponse(200, {"models": [{"name": "llama3.2:3b"}]}), "connected"),
+        # a bare name means :latest to Ollama, which isn't llama3.2:1b
+        (FakeResponse(200, {"models": [{"name": "llama3.2"}]}), "connected"),
+        (FakeResponse(200, ["not", "the", "usual", "shape"]), "connected"),
+        (FakeResponse(500, {"error": "internal error"}), "disconnected"),
+    ],
+    ids=["other-model-pulled", "bare-name-is-latest", "junk-model-list", "tags-500"],
+)
+def test_health_degraded_when_the_model_cant_be_used(monkeypatch, tags, ollama_state):
+    # /ask couldn't run the model in any of these, so not ok
+    monkeypatch.setattr(main.requests, "get", lambda *a, **k: tags)
+    response = client.get("/health")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "degraded"
+    assert data["ollama"] == ollama_state
+    assert data["model_pulled"] is False
+
+
 def test_stats_reports_settings_from_env():
     data = client.get("/stats").json()
     assert data["model"] == "llama3.2:1b"
@@ -265,7 +315,40 @@ def test_ask_nothing_within_max_distance(monkeypatch):
     assert response.json() == {"answer": main.NO_MATCH_ANSWER, "sources": [], "confidence": "low"}
 
 
-# ── /ask: invalid requests (422) ───────────────────────────────────────────
+@pytest.mark.parametrize(
+    ("question", "status"),
+    [("x" * 1000, 200), ("  " + "x" * 1000 + "  ", 200), ("x" * 1001, 422)],
+    ids=["1000", "1000-plus-spaces", "1001"],
+)
+def test_ask_question_length_limit(monkeypatch, ollama, question, status):
+    # the validator strips before max_length is checked, so padding doesn't count
+    use_collection(monkeypatch, rows=ROWS)
+    assert ask(question).status_code == status
+
+
+def test_ask_never_asks_chroma_for_more_than_is_stored(monkeypatch, ollama):
+    # chroma errors when n_results is more than the collection holds
+    fake = use_collection(monkeypatch, rows=ROWS)
+    assert ask(n_results=20).status_code == 200
+    assert fake.queried_with == 2
+
+
+def test_ask_drops_duplicate_and_blank_chunks(monkeypatch, ollama):
+    rows = [
+        ("Same paragraph.", "a.md", 0.2),
+        ("Same paragraph.", "b.md", 0.25),  # same text again, from another file
+        ("   ", "c.md", 0.3),               # blank, nothing to answer from
+        ("Other paragraph.", None, 0.35),   # stored without any metadata
+    ]
+    use_collection(monkeypatch, rows=rows)
+    # 4, the default of 3 would never fetch the last row
+    data = ask(n_results=4).json()
+    assert_ask_shape(data)
+    # the closer copy is kept, and a chunk with no source still gets a name
+    assert [(s["source"], s["distance"]) for s in data["sources"]] == [("a.md", 0.2), ("unknown", 0.35)]
+
+
+# ── /ask: invalid requests (400, 422) ──────────────────────────────────────
 
 @pytest.mark.parametrize("question", ["", "   ", "\n\t ", "\u200b"])
 def test_ask_blank_question_is_422(question):
@@ -296,40 +379,80 @@ def test_ask_invalid_body_is_422(body):
 
 
 def test_ask_malformed_json_is_422():
-    response = client.post("/ask", content='{"question": ', headers={"Content-Type": "application/json"})
+    response = post_raw('{"question": ')
     assert response.status_code == 422
     assert response.json()["detail"][0]["type"] == "json_invalid"
 
 
-# ── /ask: Ollama or ChromaDB down (503) ────────────────────────────────────
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"question": "hi", "max_distance": float("nan")},
+        {"question": "hi", "max_distance": float("inf")},
+        {"question": chr(0xD800)},  # a lone surrogate, half of a UTF-16 pair
+    ],
+    ids=["nan", "infinity", "lone-surrogate"],
+)
+def test_ask_input_json_cant_echo_back_is_422_not_500(body):
+    # Python's json parser accepts all three, but FastAPI's default 422 handler
+    # echoes the input back and can't write any of them out as JSON, so they
+    # were a 500. main.py's own handler makes them safe first. json.dumps
+    # writes NaN and Infinity as bare words and escapes the surrogate
+    response = post_raw(json.dumps(body))
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][-1] in {"max_distance", "question"}
+
+
+def test_ask_body_not_utf8_is_400():
+    # é in latin-1 is the single byte 0xE9, which isn't valid UTF-8
+    response = post_raw('{"question": "café"}'.encode("latin-1"))
+    assert response.status_code == 400
+    assert response.json() == {"detail": "There was an error parsing the body"}
+
+
+# ── /ask: Ollama or ChromaDB down (502, 503) ───────────────────────────────
 
 @pytest.mark.parametrize(
-    ("error", "detail"),
+    ("reply", "detail"),
     [
         (requests.exceptions.ConnectionError("connection refused"), "Ollama unavailable"),
+        # requests makes SSLError (and ProxyError) a kind of ConnectionError
+        (requests.exceptions.SSLError("certificate verify failed"), "Ollama unavailable"),
         (requests.exceptions.Timeout("read timed out"), "Ollama timed out"),
+        (requests.exceptions.TooManyRedirects("exceeded 30 redirects"), "Could not reach Ollama (TooManyRedirects)"),
+        (FakeResponse(404, {"error": "model 'llama3.2:1b' not found"}), "Ollama returned 404 for model llama3.2:1b"),
+        # what Ollama sends when the model process crashes while loading
+        (FakeResponse(500, {"error": "llama-server process has terminated"}),
+         "Ollama returned 500 for model llama3.2:1b"),
     ],
+    ids=["refused", "ssl", "timeout", "redirects", "model-not-pulled", "model-crashed"],
 )
-def test_ask_503_when_ollama_cant_be_reached(monkeypatch, error, detail):
+def test_ask_503_when_ollama_fails(monkeypatch, reply, detail):
     use_collection(monkeypatch, rows=ROWS)
-
-    def post(*args, **kwargs):
-        raise error
-
-    monkeypatch.setattr(main.requests, "post", post)
+    ollama_replies(monkeypatch, reply)
     response = ask()
     # the API itself is fine, so 503 (try again later) rather than a 500
     assert response.status_code == 503
     assert response.json() == {"detail": detail}
 
 
-def test_ask_503_when_the_model_isnt_pulled(monkeypatch):
+@pytest.mark.parametrize(
+    ("reply", "detail"),
+    [
+        (requests.exceptions.ChunkedEncodingError("Connection broken"), "Ollama's response was cut off"),
+        (FakeResponse(200, text="<html>Bad Gateway</html>"), "Ollama's response had no answer in it"),
+        (FakeResponse(200, {"done": True}), "Ollama's response had no answer in it"),
+        (FakeResponse(200, {"message": {"role": "assistant", "content": "   "}}), "Ollama returned an empty answer"),
+    ],
+    ids=["cut-off", "html-body", "no-message", "blank-answer"],
+)
+def test_ask_502_when_ollamas_reply_is_unusable(monkeypatch, reply, detail):
+    # Ollama was reached and replied, just with nothing usable: a bad gateway
     use_collection(monkeypatch, rows=ROWS)
-    monkeypatch.setattr(main.requests, "post",
-                        lambda *a, **k: FakeResponse(404, {"error": "model 'llama3.2:1b' not found"}))
+    ollama_replies(monkeypatch, reply)
     response = ask()
-    assert response.status_code == 503
-    assert response.json() == {"detail": "Ollama returned 404 for model llama3.2:1b"}
+    assert response.status_code == 502
+    assert response.json() == {"detail": detail}
 
 
 def test_ask_503_when_chromadb_is_broken(monkeypatch):
@@ -337,6 +460,15 @@ def test_ask_503_when_chromadb_is_broken(monkeypatch):
     response = ask()
     assert response.status_code == 503
     assert response.json() == {"detail": "ChromaDB is not readable"}
+
+
+def test_ask_503_when_the_search_fails(monkeypatch):
+    # the db opens and counts fine, but the query (which embeds the question
+    # first) fails, e.g. a missing or broken embedding model
+    use_collection(monkeypatch, rows=ROWS, search_broken=True)
+    response = ask()
+    assert response.status_code == 503
+    assert response.json() == {"detail": "ChromaDB search failed"}
 
 
 # ── confidence ─────────────────────────────────────────────────────────────
