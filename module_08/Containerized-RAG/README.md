@@ -6,6 +6,21 @@ Streamlit, Docker and RAG). The FastAPI backend chunks the files in
 question and has `llama3.2:1b` (running in Ollama) answer from them. A Streamlit
 chat UI sits in front. All three services start with one `docker-compose up`.
 
+## Quick reference
+
+Everything runs from this folder (`module_08/Containerized-RAG`).
+
+```bash
+docker-compose up --build -d                          # build and start all three services
+docker-compose exec ollama ollama pull llama3.2:1b    # once, the model stays in its volume
+curl -X POST http://localhost:8000/ingest             # index backend/docs/ (or use the UI button)
+curl -X POST http://localhost:8000/ask -H "Content-Type: application/json" \
+     -d '{"question": "What is a list comprehension?"}'
+# chat UI: http://localhost:8501
+docker build --target test ./backend                  # run the test suite inside the image build
+docker-compose down                                   # stop (keeps the index and the model)
+```
+
 ## Architecture
 
 ```
@@ -56,16 +71,17 @@ Containerized-RAG/
 ├── .github/workflows/ci.yml    tests, docker builds, lint
 ├── ruff.toml
 ├── backend/
-│   ├── Dockerfile
+│   ├── Dockerfile              multi-stage: builder, test, runtime
 │   ├── main.py                 FastAPI app: /, /ask, /ingest, /stats, /health
 │   ├── rag.py                  chunking, ChromaDB, prompt, Ollama call, confidence
 │   ├── config.py               Settings read from environment variables
-│   ├── requirements.txt
+│   ├── requirements.txt        what the API needs at runtime
+│   ├── requirements-dev.txt    + pytest and httpx2, for the tests
 │   ├── pytest.ini
 │   ├── docs/                   the corpus (.txt / .md)
 │   └── tests/test_api.py
 └── frontend/
-    ├── Dockerfile
+    ├── Dockerfile              single stage
     ├── app.py                  Streamlit chat UI
     └── requirements.txt
 ```
@@ -129,6 +145,83 @@ no-match fallback.
 
 To add your own material, drop `.txt` or `.md` files into `backend/docs/`,
 rebuild the backend (`docker-compose up -d --build backend`), and re-index.
+
+## Docker images
+
+### Backend: three stages
+
+`backend/Dockerfile` is a multi-stage build:
+
+| Stage     | Based on        | What it does                                                                 |
+| --------- | --------------- | ---------------------------------------------------------------------------- |
+| `builder` | python:3.11-slim | installs `requirements.txt` into `/opt/venv` and downloads the embedding model |
+| `test`    | `builder`       | adds `requirements-dev.txt`, copies `tests/`, runs pytest with the network off |
+| `runtime` | python:3.11-slim | copies only the venv, the model and `config.py`, `main.py`, `rag.py`, `docs/` |
+
+`runtime` is the last stage, so it's what `docker build` and `docker-compose up
+--build` produce by default. Those builds skip `test` completely, so the stack
+starts as quickly as it would from a single-stage build. The shipped image has
+no pytest, no `httpx2` and no tests in it.
+
+Run the tests inside the build:
+
+```bash
+docker build --target test ./backend
+```
+
+This runs the same 74 tests in the same Python 3.11 environment the API ships
+in, with `RUN --network=none`, so it also proves the suite needs no Ollama or
+internet. Any failing test (or any warning, it runs with `-W error`) makes the
+build exit with an error and no image is produced. Docker caches the step, so
+the suite only reruns when something in `backend/` changed. CI builds this
+target before the runtime image.
+
+### Building and running without compose
+
+These use host ports 8000 and 8501 too, so stop the compose versions first
+(`docker-compose stop backend frontend`) or change the ports.
+
+```bash
+docker build -t rag-backend ./backend
+docker build -t rag-frontend ./frontend
+
+# the API, using an Ollama the container can reach on the host
+docker run -d --name rag-api -p 127.0.0.1:8000:8000 \
+  -e OLLAMA_URL=http://host.docker.internal:11434 \
+  -v rag_db:/app/rag_db rag-backend
+
+# the UI, talking to that API through the host
+docker run -d --name rag-ui -p 127.0.0.1:8501:8501 \
+  -e BACKEND_URL=http://host.docker.internal:8000 rag-frontend
+
+curl http://localhost:8000/health
+docker rm -f rag-api rag-ui      # stop; the rag_db volume keeps the index
+```
+
+`host.docker.internal` is how a container reaches the host on Docker Desktop.
+On Linux add `--add-host=host.docker.internal:host-gateway` to both `docker run`
+commands. If the host's Ollama can't run the model, `/health` still says `ok`
+but `/ask` returns a 503 with Ollama's status code. The compose Ollama container
+works as a stand-in: with it running and `OLLAMA_HOST_PORT=11435` in `.env`, use
+`-e OLLAMA_URL=http://host.docker.internal:11435`.
+
+### Image sizes
+
+Measured on the same machine, before and after the change:
+
+| Image    | Single stage | Multi-stage |
+| -------- | ------------ | ----------- |
+| backend  | 1027 MB      | 1004 MB     |
+| frontend | 825 MB       | 810 MB (experiment, not used) |
+
+Multi-stage only trims about 2% here, because there are no compilers or build
+tools to leave behind: everything installs from prebuilt wheels. Most of the
+backend is ChromaDB and what it pulls in (the Kubernetes client alone is 126 MB,
+then onnxruntime, ChromaDB's Rust bindings and numpy), plus 88 MB for the
+embedding model. The backend uses multi-stage anyway because it keeps the test
+tools out of the image and gives the build a test stage. The frontend has
+neither to separate, and its 15 MB saving was pip's own bytecode cache, so it
+stays a single, simpler stage.
 
 ## Configuration
 
@@ -507,10 +600,17 @@ and confidence for a few sample questions.
 
 ```bash
 cd backend
+pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-The suite (74 tests) needs neither Ollama nor Docker. It points ChromaDB at a
+Or inside Docker, without installing anything locally:
+
+```bash
+docker build --target test ./backend
+```
+
+The suite (74 tests) needs neither Ollama nor a running stack. It points ChromaDB at a
 temporary folder and `OLLAMA_URL` at a closed port, and patches
 `requests.post` where it needs Ollama to answer or fail in a specific way.
 Covered:
@@ -529,8 +629,9 @@ Lint with `ruff check backend/ frontend/` from the project folder.
 ## CI
 
 `.github/workflows/ci.yml` runs three jobs in parallel on every push and pull
-request to `main`: the pytest suite on Python 3.11, both Docker image builds
-plus a `docker compose config` check, and ruff. In the Course-work repo GitHub
+request to `main`: the pytest suite on Python 3.11; the Docker job, which first
+builds the backend's `test` stage (so a failing test stops it before any image
+is built), then both images and a `docker compose config` check; and ruff. In the Course-work repo GitHub
 only reads workflows from the repository root, so the same jobs run from
 `.github/workflows/containerized-rag-ci.yml` there, limited to changes in this
 folder.
@@ -542,6 +643,8 @@ folder.
 | `ports are not available: exposing port TCP 127.0.0.1:11434 ... address already in use` | Ollama is running on the host. Set `OLLAMA_HOST_PORT=11435` in `.env` |
 | `/ask` 503 `Ollama returned 404 for model ...`    | `docker-compose exec ollama ollama pull llama3.2:1b`                 |
 | `/ask` 503 `Ollama unavailable`                   | `docker-compose start ollama`                                        |
+| `/ask` 503 `Ollama returned 500 for model ...`    | Ollama couldn't run the model. Its own error is in `docker-compose logs backend` |
+| `docker build --target test` fails                | a test failed or warned, the pytest output is in the build log       |
 | first answer is slow                              | the model is loading into memory, later ones are faster              |
 | sidebar shows 0 documents                         | click Re-index Documents                                             |
 | answers seem to ignore a new file in `docs/`      | `docker-compose up -d --build backend`, then re-index                |

@@ -4,3 +4,8 @@ target-version = "py311"
 src = ["backend", "frontend"]
 # the course starters stay exactly as they were handed out
 extend-exclude = ["*.starter.py"]
+
+# src above is resolved from the current directory when --config is passed, so
+# naming the backend modules keeps import sorting the same wherever ruff runs
+[lint.isort]
+known-first-party = ["config", "main", "rag"]

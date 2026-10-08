@@ -3,5 +3,5 @@ uvicorn[standard]==0.54.0
 chromadb==1.5.9
 requests==2.34.2
 pydantic==2.13.5
-pytest==9.1.1
+# chromadb's HTTP client, pinned so an upgrade can't sneak in through chromadb
 httpx==0.28.1

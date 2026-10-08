@@ -1,0 +1,6 @@
+# test tools, on top of the runtime packages. Used by the Dockerfile's test
+# stage and the CI test job, never installed in the image that runs the API
+-r requirements.txt
+pytest==9.1.1
+# starlette's TestClient runs on httpx2, with plain httpx it warns that's deprecated
+httpx2==2.13.1

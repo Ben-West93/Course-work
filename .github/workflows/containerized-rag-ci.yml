@@ -47,13 +47,15 @@ jobs:
           python-version: "3.11"
           # uses: inputs are relative to the repo root, not working-directory
           cache: pip
-          cache-dependency-path: module_08/Containerized-RAG/backend/requirements.txt
+          cache-dependency-path: |
+            module_08/Containerized-RAG/backend/requirements.txt
+            module_08/Containerized-RAG/backend/requirements-dev.txt
 
       - name: Install dependencies
-        # pytest and httpx are pinned in requirements.txt
+        # runtime packages plus pytest and httpx2, all pinned
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
       # the tests use a temp ChromaDB folder and a closed Ollama port, no services needed
       - name: Run tests
@@ -66,6 +68,12 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # the Dockerfile's test stage runs the suite inside the same environment
+      # the API ships in, network switched off. A failing test stops the job
+      # here, before the runtime image is built
+      - name: Run tests inside the backend image build
+        run: docker build --target test ./backend
 
       - name: Build backend image
         run: docker build -t rag-backend ./backend

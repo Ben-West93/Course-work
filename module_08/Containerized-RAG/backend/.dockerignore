@@ -1,12 +1,12 @@
-# kept out of the build context so COPY . . doesn't put them in the image
+# keeps the build context small and local state out of it. The runtime stage
+# copies only the app files by name, tests/ and pytest.ini are here for the
+# test stage
 Dockerfile*
 .dockerignore
-*.starter.py
-tests/
-pytest.ini
-.pytest_cache/
+**/*.starter.py
 # a local ChromaDB from running uvicorn outside Docker
 rag_db/
+.pytest_cache/
 **/__pycache__/
 **/*.pyc
 .env
