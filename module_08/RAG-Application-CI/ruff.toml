@@ -1,0 +1,14 @@
+# Read by `ruff check backend/ frontend/`, locally and in the lint job. CI pins
+# the same ruff version as the venv (0.16.10) because the default rule set
+# changes between releases. Without the pin, code that passes here can fail CI.
+
+# what the CI jobs and both Dockerfiles run
+target-version = "py311"
+
+# main.py and the tests import config and main by bare name from backend/, this
+# is what lets isort treat them as first party
+src = ["backend", "frontend"]
+
+# the course starters are kept as they were handed out, TODOs and unused
+# imports included
+extend-exclude = ["*.starter.py"]

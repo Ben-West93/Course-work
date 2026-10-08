@@ -1,0 +1,7 @@
+.env
+# ChromaDB from uvicorn (rag_db) and from pytest (test_chroma)
+backend/rag_db/
+backend/test_chroma/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

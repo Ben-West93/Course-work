@@ -1,0 +1,88 @@
+# .github/workflows/ci.yml  (STARTER)
+# =====================================
+# GitHub Actions CI pipeline for the RAG project.
+# Runs on every push and pull request to main.
+#
+# To activate: push this file to your GitHub repository.
+# View results in: Repository → Actions tab
+
+# TODO: Give your workflow a name, e.g. "RAG Application CI"
+name: # TODO
+
+on:
+  push:
+    # TODO: trigger on pushes to the "main" branch
+    branches: # TODO
+  pull_request:
+    # TODO: trigger on PRs targeting "main"
+    branches: # TODO
+
+jobs:
+  # ── Job 1: Run Python tests ──────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # TODO: set working-directory to ./backend so pytest finds the app
+        working-directory: # TODO
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          # TODO: python-version: "3.11"
+          python-version: # TODO
+
+      - name: Install dependencies
+        run: |
+          # TODO: upgrade pip, install -r requirements.txt, install pytest httpx
+          python -m pip install --upgrade pip
+          # TODO
+
+      - name: Run tests
+        run: # TODO: pytest tests/ -v --tb=short
+        env:
+          # Provide dummy env vars so config.py doesn't fail in CI
+          OLLAMA_URL: http://localhost:11434
+          CHROMA_PATH: ./test_chroma
+
+  # ── Job 2: Verify Docker builds ──────────────────────────────────────
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        # TODO: docker build -t rag-backend ./backend
+        run: # TODO
+
+      - name: Build frontend image
+        # TODO: docker build -t rag-frontend ./frontend
+        run: # TODO
+
+      - name: Verify images exist
+        run: |
+          # TODO: docker images rag-backend && docker images rag-frontend
+          # TODO
+
+  # ── Job 3: Lint ───────────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check code formatting
+        run: |
+          pip install ruff
+          # TODO: ruff check backend/ frontend/
+          # TODO

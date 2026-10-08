@@ -1,0 +1,108 @@
+# CI for module_08/RAG-Application-CI
+#
+# The project's own workflow is module_08/RAG-Application-CI/.github/workflows/ci.yml,
+# but GitHub only runs workflows from .github/workflows/ at the repo root. This
+# is that file with every path pointed into the project folder, so change both
+# together. The paths filter keeps pushes to other modules from running it.
+
+name: RAG Application CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "module_08/RAG-Application-CI/**"
+      - ".github/workflows/rag-application-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "module_08/RAG-Application-CI/**"
+      - ".github/workflows/rag-application-ci.yml"
+
+permissions:
+  contents: read
+
+# the project root for every run: step, so the docker and lint commands are the
+# same as in ci.yml. The test job overrides it (job level replaces this, it
+# isn't joined onto it, hence the full path there)
+defaults:
+  run:
+    working-directory: module_08/RAG-Application-CI
+
+# no needs: between the jobs, so all three run in parallel on separate runners
+jobs:
+  # ── Job 1: Run Python tests ──────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: module_08/RAG-Application-CI/backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          # uses: inputs are relative to the repo root, not working-directory
+          cache: pip
+          cache-dependency-path: module_08/RAG-Application-CI/backend/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # TestClient needs httpx. Neither is in requirements.txt since the
+          # image doesn't need them
+          pip install pytest httpx
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+        env:
+          OLLAMA_URL: http://localhost:11434
+          CHROMA_PATH: ./test_chroma
+
+  # ── Job 2: Verify Docker builds ──────────────────────────────────────
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t rag-backend ./backend
+
+      - name: Build frontend image
+        run: docker build -t rag-frontend ./frontend
+
+      - name: Verify images exist
+        run: |
+          docker images rag-backend && docker images rag-frontend
+          # docker images exits 0 even when nothing matches, so on its own it
+          # can't fail the step. inspect exits 1 if either image is missing
+          docker image inspect rag-backend rag-frontend > /dev/null
+
+  # ── Job 3: Lint ───────────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check code formatting
+        run: |
+          # same version as the local venv. Newer releases change the default
+          # rules, so an unpinned install could fail on code that passes locally.
+          # Settings are in ruff.toml
+          pip install ruff==0.16.10
+          ruff check backend/ frontend/

@@ -1,0 +1,20 @@
+# left out of the build context, so COPY . . can't put them in the image
+
+# Docker reads the Dockerfile itself even when it's listed here
+Dockerfile*
+.dockerignore
+
+# the test job runs these, the image only needs the app
+tests/
+pytest.ini
+.pytest_cache/
+
+# local ChromaDB folders: rag_db/ from running uvicorn outside Docker,
+# test_chroma/ from pytest
+rag_db/
+test_chroma/
+
+**/__pycache__/
+**/*.pyc
+.env
+.DS_Store
