@@ -116,9 +116,10 @@ curl http://localhost:8000/health
 `/health` should say `"status": "ok"`. If it says `degraded`, `ollama` and
 `model_pulled` tell you which part is missing.
 
-If Ollama is already installed and running on your machine it holds port 11434,
-and the ollama container can't publish on it. Set `OLLAMA_HOST_PORT=11435` in
-`.env`. The backend doesn't care, it reaches Ollama over the compose network.
+The ollama container is published on host port 11435, not Ollama's usual 11434,
+so the stack also starts on a machine where Ollama is installed and running
+itself. `curl http://localhost:11435/api/tags` reaches the container's Ollama.
+The backend doesn't use that port, it reaches Ollama over the compose network.
 
 Stop with `docker-compose down`. Use `docker-compose down -v` only if you want to
 wipe the index and the downloaded model.
@@ -202,7 +203,7 @@ docker rm -f rag-api rag-ui      # stop; the rag_db volume keeps the index
 On Linux add `--add-host=host.docker.internal:host-gateway` to both `docker run`
 commands. If the host's Ollama can't run the model, `/health` still says `ok`
 but `/ask` returns a 503 with Ollama's status code. The compose Ollama container
-works as a stand-in: with it running and `OLLAMA_HOST_PORT=11435` in `.env`, use
+works as a stand-in: with it running, use
 `-e OLLAMA_URL=http://host.docker.internal:11435`.
 
 ### Image sizes
@@ -240,7 +241,7 @@ unset.
 | `CONFIDENCE_THRESHOLD` | `1.0`                    | top-chunk distance above this makes confidence `low`          |
 | `MAX_DISTANCE`         | `1.2`                    | default `max_distance` for `/ask`, chunks past it are dropped  |
 | `DEBUG`                | `false`                  | logs retrieval distances and Ollama timings                   |
-| `OLLAMA_HOST_PORT`     | `11434`                  | compose only: host port for the ollama container              |
+| `OLLAMA_HOST_PORT`     | `11435`                  | compose only: host port for the ollama container              |
 | `BACKEND_URL`          | `http://localhost:8000`  | frontend. Compose sets `http://backend:8000`                  |
 
 `MAX_DISTANCE` isn't in the starter's list. The starter hardcoded
@@ -640,7 +641,7 @@ folder.
 
 | Symptom                                           | Fix                                                                  |
 | ------------------------------------------------- | -------------------------------------------------------------------- |
-| `ports are not available: exposing port TCP 127.0.0.1:11434 ... address already in use` | Ollama is running on the host. Set `OLLAMA_HOST_PORT=11435` in `.env` |
+| `ports are not available: exposing port TCP 127.0.0.1:11435 ... address already in use` | something else holds 11435. Set another `OLLAMA_HOST_PORT` in `.env` |
 | `/ask` 503 `Ollama returned 404 for model ...`    | `docker-compose exec ollama ollama pull llama3.2:1b`                 |
 | `/ask` 503 `Ollama unavailable`                   | `docker-compose start ollama`                                        |
 | `/ask` 503 `Ollama returned 500 for model ...`    | Ollama couldn't run the model. Its own error is in `docker-compose logs backend` |

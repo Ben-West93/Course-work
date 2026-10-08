@@ -67,10 +67,11 @@ services:
   ollama:
     image: ollama/ollama
     # the backend uses ollama:11434 on the compose network and doesn't need
-    # this, it's for curl / the CLI from the host. If Ollama is already
-    # running on the host, set OLLAMA_HOST_PORT=11435 in .env
+    # this, it's for curl / the CLI from the host. 11435 rather than Ollama's
+    # usual 11434, so it doesn't clash with an Ollama installed on the host.
+    # OLLAMA_HOST_PORT in .env changes it
     ports:
-      - "127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434"
+      - "127.0.0.1:${OLLAMA_HOST_PORT:-11435}:11434"
     volumes:
       # pulled models live here (~1.3GB for llama3.2:1b), so they're only downloaded once
       - ollama_models:/root/.ollama
