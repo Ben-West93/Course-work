@@ -57,7 +57,7 @@ A push to `main` triggers a run, and so does opening or updating a PR that targe
 
 | Job | Runner | Working directory | Steps | Timeout |
 |---|---|---|---|---|
-| `test` | `ubuntu-latest` | `./backend` | checkout, Python 3.11, `pip install -r requirements.txt` + `pytest httpx`, `pytest tests/ -v --tb=short` | 10 min |
+| `test` | `ubuntu-latest` | `./backend` | checkout, Python 3.11, `pip install -r requirements.txt` + `pytest==9.1.1 httpx==0.28.1`, `pytest tests/ -v --tb=short` | 10 min |
 | `docker` | `ubuntu-latest` | project root | checkout, `docker build -t rag-backend ./backend`, `docker build -t rag-frontend ./frontend`, check both images exist | 20 min |
 | `lint` | `ubuntu-latest` | project root | checkout, Python 3.11, `pip install ruff==0.16.10`, `ruff check backend/ frontend/` | 5 min |
 
@@ -66,7 +66,7 @@ The timeouts are there because GitHub's default is 6 hours, so a test stuck on a
 ### test
 
 - `defaults.run.working-directory: ./backend` only applies to `run:` steps. `uses:` steps ignore it, which is why `cache-dependency-path` is written from the repo root.
-- `httpx` isn't in `requirements.txt` because the image doesn't need it, but `fastapi.testclient` imports it. Without the extra `pip install pytest httpx` the suite fails on import.
+- `httpx` isn't in `requirements.txt` because the image doesn't need it, but `fastapi.testclient` imports it. Without the extra `pip install pytest==9.1.1 httpx==0.28.1` the suite fails on import. Both are pinned to the venv's versions for the same reason ruff is: a new release can't turn the job red when the code hasn't changed.
 - The run step sets two env vars:
 
   | Variable | Value | Why |
@@ -113,7 +113,7 @@ Or with any environment that has the backend requirements:
 
 ```bash
 cd backend
-pip install -r requirements.txt pytest httpx
+pip install -r requirements.txt pytest==9.1.1 httpx==0.28.1
 pytest tests/ -v
 ```
 
@@ -139,7 +139,7 @@ docker build -t rag-backend ./backend && docker build -t rag-frontend ./frontend
 The venv is Python 3.13 and CI is 3.11. To run the suite on 3.11 with a fresh install, like the test job does:
 
 ```bash
-docker run --rm -v "$PWD/backend:/src:ro" python:3.11-slim sh -c 'cp -r /src /work && cd /work && pip install -q -r requirements.txt pytest httpx && OLLAMA_URL=http://localhost:11434 CHROMA_PATH=./test_chroma pytest tests/ -v --tb=short'
+docker run --rm -v "$PWD/backend:/src:ro" python:3.11-slim sh -c 'cp -r /src /work && cd /work && pip install -q -r requirements.txt pytest==9.1.1 httpx==0.28.1 && OLLAMA_URL=http://localhost:11434 CHROMA_PATH=./test_chroma pytest tests/ -v --tb=short'
 ```
 
 ## Checking a run on GitHub
@@ -181,7 +181,7 @@ gh run view --log-failed
   ```
 
 - **The backend build needs the network.** It downloads Chroma's embedding model during `docker build`. If the docker job fails on that `RUN` line, look for a download error in the log before looking at the code, and re-run the job.
-- **`pytest` and `httpx` aren't pinned.** The test job installs the newest of each. The first run got pytest 9.1.1 and httpx 0.28.1, the same as the venv, but a new major release of either could fail the job with no code change. `pip install pytest==9.1.1 httpx==0.28.1` would stop that.
+- **Pinned test tools.** pytest (9.1.1), httpx (0.28.1) and ruff (0.16.10) are pinned in both workflow files to the venv's versions, so a failing job means the code changed, not a tool. Updates don't arrive on their own: to move to a newer version, change it in the venv and in both workflow files together. The app's own dependencies are pinned in `requirements.txt`, but their sub-dependencies (starlette, onnxruntime and so on) aren't.
 - **The paths filter and required checks.** The root workflow only runs when something in this folder (or the workflow file) changes. If `test`, `docker` or `lint` were ever made required status checks on `main`, a PR that doesn't touch this folder would wait forever for checks that never start.
 
 ## The tests
@@ -564,7 +564,8 @@ Python's JSON parser accepts `NaN`, `Infinity` and lone surrogates, but none of 
 | Problem | What would happen | Handled by |
 |---|---|---|
 | workflow only in the project's `.github/` | no run at all | root copy `rag-application-ci.yml` |
-| `httpx` not installed | `ImportError` from `fastapi.testclient` | `pip install pytest httpx` |
+| `httpx` not installed | `ImportError` from `fastapi.testclient` | `pip install pytest==9.1.1 httpx==0.28.1` |
+| a new pytest or httpx release | job fails with no code change | both pinned in the workflow |
 | `from main import app` can't be found | `ModuleNotFoundError: main` | `tests/__init__.py` + `pythonpath = .` in `pytest.ini` |
 | `test_api.starter.py` collected (matches `test_*.py`) | `No module named 'tests.test_api.starter'` | `addopts = --ignore-glob=*.starter.py` |
 | starter linted | 5 ruff errors | `extend-exclude` in `ruff.toml` |

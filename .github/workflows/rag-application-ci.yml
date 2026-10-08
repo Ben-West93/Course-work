@@ -56,8 +56,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           # TestClient needs httpx. Neither is in requirements.txt since the
-          # image doesn't need them
-          pip install pytest httpx
+          # image doesn't need them. Pinned to the venv's versions, like ruff,
+          # so a new release can't fail the job without a code change
+          pip install pytest==9.1.1 httpx==0.28.1
 
       - name: Run tests
         run: pytest tests/ -v --tb=short

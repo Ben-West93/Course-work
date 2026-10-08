@@ -3,7 +3,7 @@ CI Tests: FastAPI RAG API
 =========================
 Run locally:
     cd backend
-    pip install pytest httpx
+    pip install pytest==9.1.1 httpx==0.28.1
     pytest tests/ -v
 
 These run in GitHub Actions on every push and PR to main. There's no Ollama
