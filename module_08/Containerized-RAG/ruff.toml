@@ -1,0 +1,6 @@
+# used by `ruff check backend/ frontend/`, locally and in the CI lint job
+target-version = "py311"
+# main.py and the tests import config, rag and main by bare name from backend/
+src = ["backend", "frontend"]
+# the course starters stay exactly as they were handed out
+extend-exclude = ["*.starter.py"]

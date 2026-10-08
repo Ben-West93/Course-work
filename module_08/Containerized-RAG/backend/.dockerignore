@@ -1,0 +1,13 @@
+# kept out of the build context so COPY . . doesn't put them in the image
+Dockerfile*
+.dockerignore
+*.starter.py
+tests/
+pytest.ini
+.pytest_cache/
+# a local ChromaDB from running uvicorn outside Docker
+rag_db/
+**/__pycache__/
+**/*.pyc
+.env
+.DS_Store

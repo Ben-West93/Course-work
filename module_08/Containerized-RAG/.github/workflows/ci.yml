@@ -1,0 +1,87 @@
+# CI for the containerized RAG assistant: tests, Docker builds and lint.
+#
+# GitHub only runs workflows from .github/workflows/ at the repository root, so
+# in the Course-work repo this file is mirrored by
+# .github/workflows/containerized-rag-ci.yml (same jobs, paths pointed into
+# module_08/Containerized-RAG). Change both together.
+
+name: Containerized RAG CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# no needs: between the jobs, so all three run in parallel
+jobs:
+  # ── Job 1: Run Python tests ──────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        # pytest and httpx are pinned in requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # the tests use a temp ChromaDB folder and a closed Ollama port, no services needed
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+  # ── Job 2: Verify Docker builds ──────────────────────────────────────
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build -t rag-backend ./backend
+
+      - name: Build frontend image
+        run: docker build -t rag-frontend ./frontend
+
+      - name: Validate compose file
+        run: docker compose config --quiet
+
+      - name: Verify images exist
+        # docker images exits 0 even with no match, inspect fails if either is missing
+        run: docker image inspect rag-backend rag-frontend > /dev/null
+
+  # ── Job 3: Lint ───────────────────────────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check code
+        # same ruff as the local venv, newer releases change the default rules
+        run: |
+          pip install ruff==0.16.10
+          ruff check backend/ frontend/

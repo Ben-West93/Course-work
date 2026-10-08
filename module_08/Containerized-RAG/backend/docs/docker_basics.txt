@@ -1,0 +1,35 @@
+Introduction to Docker
+
+Docker packages an application together with its runtime, libraries and settings into an image. A container is a running instance of an image. Because the image carries everything the app needs, it runs the same way on a laptop, a CI runner or a server.
+
+Writing a Dockerfile
+
+A Dockerfile is a list of instructions that build an image layer by layer:
+    FROM python:3.11-slim
+    WORKDIR /app
+    COPY requirements.txt .
+    RUN pip install --no-cache-dir -r requirements.txt
+    COPY . .
+    EXPOSE 8000
+    CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+Copying requirements.txt before the rest of the source code lets Docker reuse the cached pip install layer when only the code changes, which makes rebuilds much faster.
+
+Docker Compose
+
+Docker Compose runs several containers together from a single docker-compose.yml file. Each entry under services becomes a container. The whole stack starts with docker-compose up --build and stops with docker-compose down.
+
+Compose puts all services on a shared network where each service name works as a hostname. A backend container reaches an Ollama container at http://ollama:11434, not http://localhost:11434, because localhost inside a container refers to that container itself.
+
+depends_on controls start order. On its own it only waits for the other container to start. With condition: service_healthy it waits until that service's healthcheck passes.
+
+Named Volumes
+
+A container's filesystem is thrown away when the container is removed. Named volumes are storage managed by Docker that lives outside any container, so data written there survives docker-compose down and rebuilt images. docker-compose down -v deletes the volumes as well.
+
+    volumes:
+      - chroma_data:/app/rag_db
+
+Environment Variables
+
+Configuration such as URLs, model names and paths should come from environment variables instead of being hardcoded. Compose can set them with environment: or load a whole file with env_file:. A .env file usually holds local values and is kept out of version control, while a .env.example file documents the variables and is committed.

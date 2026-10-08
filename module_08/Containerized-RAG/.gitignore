@@ -1,0 +1,6 @@
+.env
+# local ChromaDB folder from running uvicorn outside Docker
+backend/rag_db/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

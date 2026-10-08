@@ -1,0 +1,77 @@
+What is Retrieval-Augmented Generation (RAG)?
+
+Retrieval-Augmented Generation (RAG) is a technique that combines information retrieval with large language model (LLM) generation. Instead of relying solely on the LLM's training data, RAG retrieves relevant documents from a knowledge base at query time and includes them in the prompt.
+
+This approach solves two major problems with vanilla LLMs: hallucination (generating plausible-sounding but incorrect information) and knowledge cutoff (the model doesn't know about events after its training date).
+
+The RAG Pipeline
+
+A typical RAG pipeline has five stages:
+
+1. Document Loading — Read source documents (PDFs, text files, web pages) and split them into smaller chunks. Smaller chunks (200–500 words) retrieve more precisely than large ones.
+
+2. Embedding — Convert each chunk into a numerical vector (embedding) using an embedding model. Semantically similar text produces similar vectors.
+
+3. Storage — Store the vectors in a vector database (e.g. ChromaDB, Pinecone, Weaviate). The database indexes the vectors for fast similarity search.
+
+4. Retrieval — When a user asks a question, convert the question to a vector and search the database for the most similar chunks. Return the top-k results.
+
+5. Generation — Build a prompt that includes the retrieved chunks as context and send it to an LLM. The model generates an answer grounded in the retrieved content.
+
+What is ChromaDB?
+
+ChromaDB is an open-source vector database designed for AI applications. It stores document chunks alongside their vector embeddings and metadata, and provides fast nearest-neighbour search.
+
+Key ChromaDB concepts:
+- Collection: a named group of documents (like a table in a relational database)
+- Document: the raw text content of a chunk
+- Embedding: the vector representation of a document (ChromaDB can compute these automatically)
+- Metadata: arbitrary key-value pairs attached to a document (e.g. source filename, page number)
+- Distance: how similar two vectors are — lower distance means higher similarity
+
+Creating and querying a ChromaDB collection:
+    import chromadb
+    client = chromadb.PersistentClient(path="./rag_db")
+    collection = client.get_or_create_collection("documents")
+
+    # Add documents
+    collection.add(documents=["Hello world"], ids=["doc1"])
+
+    # Query
+    results = collection.query(query_texts=["greeting"], n_results=1)
+
+What is Ollama?
+
+Ollama is a tool for running large language models locally on your own hardware. It provides a REST API compatible with OpenAI's chat completions format, so applications built for OpenAI can switch to local models with minimal changes.
+
+Ollama's /api/chat endpoint accepts a list of messages and returns a completion:
+    POST http://localhost:11434/api/chat
+    {
+        "model": "llama3.2:1b",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user",   "content": "What is Python?"}
+        ],
+        "stream": false
+    }
+
+Setting stream to false returns the full response in a single JSON object, which is simpler to handle than streaming responses.
+
+Confidence Scoring in RAG
+
+ChromaDB returns a distance score for each retrieved chunk. The distance measures how different the chunk's vector is from the query vector. Common distance metrics include:
+- L2 (Euclidean distance): 0 is a perfect match, higher is less similar
+- Cosine distance: 0 is identical, 1 is completely different
+
+You can use the distance score to estimate answer confidence:
+- Distance < 0.5: high confidence — very similar content found
+- Distance 0.5–1.0: medium confidence — somewhat related content
+- Distance > 1.0: low confidence — no closely matching content found
+
+RAG Guardrails
+
+Guardrails are checks that make RAG systems more reliable:
+- Confidence threshold: reject answers when no chunk is close enough to the query
+- No-context fallback: return a safe "I don't know" response instead of hallucinating
+- Answer validation: check that the response cites actual sources from the retrieved chunks
+- Input sanitisation: strip or reject queries that are too short, too long, or contain injection attempts

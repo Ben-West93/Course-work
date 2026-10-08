@@ -1,0 +1,56 @@
+# docker-compose.yml  (STARTER)
+# =================================
+# Defines three services: backend, frontend, and ollama.
+# Run everything with:   docker-compose up --build
+#
+# TODO: Complete each service definition.
+# Refer to the Docker Compose lessons (Lessons 4 & 5) for guidance.
+
+version: "3.9"
+
+services:
+
+  # ── 1. Ollama — local LLM server ──────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    # TODO: Add a named volume to persist downloaded models
+    #   volumes:
+    #     - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+
+  # ── 2. Backend — FastAPI RAG API ──────────────────────────────────────────
+  backend:
+    # TODO: Set build context to ./backend
+    #   build: ./backend
+    ports:
+      - "8000:8000"
+    # TODO: Add environment variables from your .env file
+    #   env_file:
+    #     - .env
+    # TODO: Add a named volume for ChromaDB persistence
+    #   volumes:
+    #     - chroma_data:/app/rag_db
+    # TODO: Make backend depend on ollama so it starts in the right order
+    #   depends_on:
+    #     - ollama
+
+  # ── 3. Frontend — Streamlit UI ────────────────────────────────────────────
+  frontend:
+    # TODO: Set build context to ./frontend
+    #   build: ./frontend
+    ports:
+      - "8501:8501"
+    # TODO: Set the BACKEND_URL environment variable so the frontend
+    #       can reach the backend by its service name (not localhost)
+    #   environment:
+    #     - BACKEND_URL=http://backend:8000
+    # TODO: Make frontend depend on backend
+    #   depends_on:
+    #     - backend
+
+# ── Named volumes ─────────────────────────────────────────────────────────
+# TODO: Declare the named volumes you referenced above
+# volumes:
+#   ollama_data:
+#   chroma_data:

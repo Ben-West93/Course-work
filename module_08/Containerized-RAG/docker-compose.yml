@@ -1,0 +1,89 @@
+# Three-service RAG stack: backend (FastAPI) + frontend (Streamlit) + ollama
+#
+#   cp .env.example .env                                  (optional, defaults work without it)
+#   docker-compose up --build
+#   docker-compose exec ollama ollama pull llama3.2:1b    (once, the volume keeps it)
+#   docker-compose down                                   (-v would also delete both volumes)
+
+# volume names are prefixed with the project name, which otherwise comes from
+# the folder. Pinned so renaming the folder doesn't start over with empty volumes
+name: containerized-rag
+
+services:
+
+  # ── Backend: FastAPI RAG API ───────────────────────────────────────────
+  backend:
+    build: ./backend
+    # 127.0.0.1 keeps the API off the rest of the network. Inside the
+    # container uvicorn still listens on 0.0.0.0 so the mapping can reach it
+    ports:
+      - "127.0.0.1:8000:8000"
+    # MODEL_NAME, MAX_RESULTS, CONFIDENCE_THRESHOLD, MAX_DISTANCE and DEBUG.
+    # Optional, so a fresh clone without a .env still starts on the defaults
+    env_file:
+      - path: .env
+        required: false
+    # these win over the same keys in .env
+    environment:
+      # compose's network resolves each service name to that container.
+      # localhost here would be the backend container itself
+      - OLLAMA_URL=http://ollama:11434
+      # must match where chroma_data is mounted below
+      - CHROMA_PATH=/app/rag_db
+    volumes:
+      # ChromaDB writes here, so ingested chunks outlive the container
+      - chroma_data:/app/rag_db
+    # wait for Ollama's healthcheck, not just for its container to start.
+    # required: false means a broken Ollama only gives a warning, the API
+    # still starts and serves /health (degraded), /ingest and /stats
+    depends_on:
+      ollama:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      # python is the only thing in the slim image that can make a request.
+      # urlopen raises on the 503 /health returns when ChromaDB is broken
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+  # ── Frontend: Streamlit UI ─────────────────────────────────────────────
+  frontend:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      # the browser talks to Streamlit, Streamlit's Python talks to the
+      # backend from inside this container, so it uses the service name
+      - BACKEND_URL=http://backend:8000
+    # only start order. The sidebar already shows when the backend is down
+    depends_on:
+      - backend
+
+  # ── Ollama: local LLM runtime ──────────────────────────────────────────
+  ollama:
+    image: ollama/ollama
+    # the backend uses ollama:11434 on the compose network and doesn't need
+    # this, it's for curl / the CLI from the host. If Ollama is already
+    # running on the host, set OLLAMA_HOST_PORT=11435 in .env
+    ports:
+      - "127.0.0.1:${OLLAMA_HOST_PORT:-11434}:11434"
+    volumes:
+      # pulled models live here (~1.3GB for llama3.2:1b), so they're only downloaded once
+      - ollama_models:/root/.ollama
+    healthcheck:
+      # fails until the server is answering
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+# managed by Docker outside the containers. down keeps them, down -v deletes them
+volumes:
+  chroma_data:
+  ollama_models:

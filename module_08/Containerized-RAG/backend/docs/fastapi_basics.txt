@@ -1,0 +1,67 @@
+Introduction to FastAPI
+
+FastAPI is a modern, high-performance web framework for building APIs with Python. It is built on top of Starlette for the web layer and Pydantic for data validation. FastAPI automatically generates interactive API documentation at /docs (Swagger UI) and /redoc.
+
+FastAPI is one of the fastest Python web frameworks available, comparable to NodeJS and Go in benchmarks, thanks to its use of Python's async/await features and the ASGI (Asynchronous Server Gateway Interface) standard.
+
+Creating a FastAPI Application
+
+A minimal FastAPI app requires only a few lines:
+
+    from fastapi import FastAPI
+    app = FastAPI()
+
+    @app.get("/")
+    def root():
+        return {"message": "Hello, world!"}
+
+Run it with Uvicorn, an ASGI server:
+    uvicorn main:app --reload
+
+The --reload flag restarts the server whenever a source file changes, which is useful during development.
+
+Path Operations and HTTP Methods
+
+FastAPI uses decorators to define endpoints. The decorator specifies the HTTP method and path:
+    @app.get("/items")         GET request to /items
+    @app.post("/items")        POST request to /items
+    @app.put("/items/{id}")    PUT request to /items/<id>
+    @app.delete("/items/{id}") DELETE request to /items/<id>
+
+Path parameters are declared in curly braces and passed as function arguments:
+    @app.get("/items/{item_id}")
+    def get_item(item_id: int):
+        return {"id": item_id}
+
+Request Bodies with Pydantic
+
+FastAPI uses Pydantic models for request and response validation. Define a model by subclassing BaseModel:
+
+    from pydantic import BaseModel
+
+    class Item(BaseModel):
+        name: str
+        price: float
+        in_stock: bool = True
+
+    @app.post("/items")
+    def create_item(item: Item):
+        return item
+
+FastAPI automatically validates the request body against the model and returns a 422 error if validation fails.
+
+Query Parameters
+
+Any function parameter that is not a path parameter is treated as a query parameter:
+    @app.get("/search")
+    def search(q: str, limit: int = 10):
+        return {"query": q, "limit": limit}
+
+This handles requests like: GET /search?q=python&limit=5
+
+FastAPI Middleware
+
+Middleware runs before and after every request. CORS middleware is commonly used to allow frontend applications on different origins to call the API:
+
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])

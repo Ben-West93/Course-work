@@ -1,0 +1,42 @@
+Introduction to Streamlit
+
+Streamlit is an open-source Python library for building data apps and simple web interfaces without writing HTML, CSS or JavaScript. A Streamlit app is an ordinary Python script, and every call such as st.title() or st.write() adds an element to the page.
+
+Start an app from the terminal with:
+    streamlit run app.py
+
+By default the server listens on port 8501. Inside a container it also needs --server.address=0.0.0.0, otherwise it only accepts connections from the container itself.
+
+The Streamlit Execution Model
+
+Streamlit reruns the whole script from top to bottom every time the user interacts with a widget, such as clicking a button or submitting text. Ordinary variables are recreated on every rerun, so anything that has to survive between interactions must be kept somewhere else.
+
+Session State
+
+st.session_state is a dictionary-like object that persists across reruns for as long as the browser tab stays open. Each browser tab gets its own session state.
+
+Always initialise a key before reading it, otherwise the first run raises a KeyError:
+
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+Chat Elements
+
+st.chat_input() shows a text box pinned to the bottom of the page and returns the submitted text, or None when nothing was submitted on this run. st.chat_message(role) is a container that renders a message with an avatar for "user" or "assistant".
+
+A typical chat loop replays the stored history first, then handles new input:
+
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Ask a question..."):
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+
+Layout Elements
+
+st.sidebar holds controls in a collapsible panel on the left. Use it as a context manager with "with st.sidebar:". st.expander() creates a section the user can open and close, which is useful for long details such as source citations. st.spinner() shows a loading message while a slow block of code runs.
+
+Status Messages
+
+st.success(), st.info(), st.warning() and st.error() show coloured message boxes. Markdown text can be coloured with the :color[text] syntax, for example :green[ok] or :red[failed].
