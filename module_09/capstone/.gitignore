@@ -1,0 +1,7 @@
+.env
+# local SQLite and ChromaDB from running uvicorn outside Docker
+backend/jobfit.db
+backend/chroma/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

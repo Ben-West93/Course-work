@@ -1,0 +1,371 @@
+"""
+Streamlit UI for JobFit: log in, save postings, ask questions about them.
+
+    BACKEND_URL=http://localhost:8000 streamlit run app.py
+
+In Docker Compose BACKEND_URL is http://backend:8000.
+
+Pages and the API calls behind them:
+    sign in / create account   POST /auth/token, POST /auth/register
+    Jobs                       GET /jobs, POST /jobs, DELETE /jobs/{id},
+                               POST /jobs/samples, POST /jobs/reindex
+    Ask                        GET /jobs (for the filter), POST /ask
+    sidebar, every page        GET /health
+
+Everything here runs on the Streamlit server, not in the browser, so the JWT
+never reaches the browser. Anything that came from a user or the model is
+escaped before it goes into st.markdown (plain() and safe_markdown()).
+Tests: tests/test_app.py.
+"""
+
+import os
+import re
+
+import requests
+import streamlit as st
+
+# this runs in the frontend container, not the browser, so it reaches the API
+# by its compose service name. localhost here would be this container
+BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
+# the backend gives Ollama up to 120s, so wait a bit longer than that
+ASK_TIMEOUT = 150
+CONFIDENCE_COLOURS = {"high": "green", "medium": "orange", "low": "red"}
+JOB_FORM_KEYS = ("job_title", "job_company", "job_location", "job_url", "job_text")
+
+st.set_page_config(page_title="JobFit", page_icon="🧭", layout="centered")
+
+# the JWT lives here, on the Streamlit server, and never reaches the browser
+for key, default in [("token", None), ("username", None), ("chat", []), ("notice", None)]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+
+class SessionExpired(Exception):
+    pass
+
+
+def error_detail(r: requests.Response) -> str:
+    # app errors are {"detail": "..."}, 422s are a list of pydantic errors
+    try:
+        body = r.json()
+    except ValueError:
+        return r.text[:200] or f"HTTP {r.status_code}"
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if isinstance(detail, list) and detail:
+        parts = []
+        for e in detail:
+            if isinstance(e, dict):
+                field = ".".join(str(p) for p in e.get("loc", [])[1:])
+                msg = str(e.get("msg", e)).removeprefix("Value error, ")
+                parts.append(f"{field}: {msg}" if field else msg)
+            else:
+                parts.append(str(e))
+        return "; ".join(parts)
+    return str(detail or f"HTTP {r.status_code}")
+
+
+def api(method: str, path: str, timeout: float = 30, **kwargs) -> requests.Response:
+    headers = {"Authorization": f"Bearer {st.session_state.token}"} if st.session_state.token else {}
+    r = requests.request(method, f"{BACKEND_URL}{path}", headers=headers, timeout=timeout, **kwargs)
+    # 30-minute tokens, or a backend restart without JWT_SECRET set
+    if r.status_code == 401 and st.session_state.token:
+        logout()
+        raise SessionExpired
+    return r
+
+
+def logout():
+    st.session_state.token = None
+    st.session_state.username = None
+    st.session_state.chat = []
+
+
+def login(username: str, password: str) -> str | None:
+    """None on success, otherwise the error to show."""
+    r = requests.post(f"{BACKEND_URL}/auth/token", data={"username": username, "password": password}, timeout=10)
+    if r.status_code != 200:
+        return error_detail(r)
+    st.session_state.token = r.json()["access_token"]
+    st.session_state.username = username.strip().lower()
+    return None
+
+
+# Markdown that would change how a posting's title or company renders
+MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()#+\-.!|<>~$:])")
+# invisible and zero width. GFM still turned "http://..." in a title into a
+# link after the escapes, a word joiner inside "://" and "www." stops that
+WORD_JOINER = "\u2060"
+
+
+def plain(text: str) -> str:
+    """User text shown inside st.markdown as literal characters."""
+    # a title like "![x](http://tracker)" loaded an image, "$90k-$110k" turned into LaTeX
+    escaped = MARKDOWN_SPECIAL.sub(r"\\\1", str(text))
+    return escaped.replace("\\:", "\\:" + WORD_JOINER).replace("www\\.", "www" + WORD_JOINER + "\\.")
+
+
+def safe_markdown(text: str) -> str:
+    """Model output for st.markdown: formatting kept, nothing that loads or links."""
+    # st.markdown treats $...$ as LaTeX ("$95,000 to $115,000"), and would
+    # load any ![image](url) in an answer, which a pasted posting could abuse.
+    # Links are made plain text too: a posting with planted instructions got
+    # 3b to answer "Visit http://shady.example to apply", which rendered as a
+    # clickable link. "[text](url)" loses its "(" and "://" gets a word joiner
+    text = text.replace("$", "\\$").replace("![", "!\\[").replace("](", "]\\(")
+    return text.replace("://", ":" + WORD_JOINER + "//").replace("www.", "www" + WORD_JOINER + ".")
+
+
+def fetch_health() -> dict | None:
+    try:
+        return requests.get(f"{BACKEND_URL}/health", timeout=5).json()
+    except (requests.exceptions.RequestException, ValueError):
+        return None
+
+
+# ── Sidebar ────────────────────────────────────────────────────────────────
+
+def sidebar(health: dict | None):
+    with st.sidebar:
+        st.title("🧭 JobFit")
+        if health is None:
+            st.error("Backend: unreachable")
+            st.caption(f"Nothing answered at `{BACKEND_URL}`.")
+        else:
+            label = {"ok": "success", "degraded": "warning"}.get(health.get("status"), "error")
+            getattr(st, label)(f"Backend: {health.get('status', '?')}")
+            st.caption(f"Database: {health.get('database')} · Chroma: {health.get('chroma')} · "
+                       f"Ollama: {health.get('ollama')}")
+            if health.get("ollama") == "connected" and not health.get("model_ready"):
+                st.warning(f"{health.get('model')} is still downloading. Questions will fail until it's ready.")
+
+        if st.session_state.token:
+            st.divider()
+            st.write(f"Signed in as **{plain(st.session_state.username)}**")
+            st.button("Sign out", on_click=logout, width="stretch")
+
+
+def login_page():
+    st.title("JobFit")
+    st.caption("Save the job postings you're applying to and ask questions about them.")
+    if st.session_state.pop("expired", False):
+        st.warning("Your session expired. Sign in again.")
+    sign_in, register = st.tabs(["Sign in", "Create account"])
+    with sign_in, st.form("login"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        if st.form_submit_button("Sign in", type="primary"):
+            error = login(username, password)
+            if error:
+                st.error(error)
+            else:
+                st.rerun()
+    with register, st.form("register"):
+        username = st.text_input("Username", help="3-50 characters: letters, digits, _ . -")
+        password = st.text_input("Password", type="password", help="At least 8 characters")
+        if st.form_submit_button("Create account", type="primary"):
+            r = requests.post(f"{BACKEND_URL}/auth/register",
+                              json={"username": username, "password": password}, timeout=10)
+            if r.status_code != 201:
+                st.error(error_detail(r))
+            else:
+                login(username, password)
+                st.rerun()
+
+
+# ── Jobs ───────────────────────────────────────────────────────────────────
+
+def jobs_page():
+    st.header("Saved postings")
+    if st.session_state.notice:
+        kind, message = st.session_state.notice
+        getattr(st, kind)(message)
+        st.session_state.notice = None
+
+    r = api("get", "/jobs", params={"limit": 100})
+    jobs = r.json() if r.status_code == 200 else []
+    if r.status_code != 200:
+        st.error(f"Couldn't load postings: {error_detail(r)}")
+
+    if not jobs:
+        st.info("Nothing saved yet. Add a posting below, or load the sample postings.")
+    elif len(jobs) == 100:
+        st.caption("Showing your 100 newest postings.")
+    for job in jobs:
+        with st.container(border=True):
+            left, right = st.columns([5, 1])
+            left.markdown(f"**{plain(job['title'])}** · {plain(job['company'])}")
+            left.caption(" · ".join(filter(None, [job.get("location"), job["source"],
+                                                  "indexed" if job["indexed"] else "not indexed"])))
+            if right.button("Delete", key=f"del_{job['id']}"):
+                d = api("delete", f"/jobs/{job['id']}")
+                st.session_state.notice = (("success", f"Deleted {plain(job['title'])}") if d.status_code == 204
+                                           else ("error", error_detail(d)))
+                st.rerun()
+
+    cols = st.columns(2)
+    if cols[0].button("Load sample postings", width="stretch"):
+        with st.spinner("Saving and indexing the samples..."):
+            s = api("post", "/jobs/samples", timeout=120)
+        st.session_state.notice = (("success", f"Added {s.json()['added']}, skipped {s.json()['skipped']} already saved")
+                                   if s.status_code == 200 else ("error", error_detail(s)))
+        st.rerun()
+    if cols[1].button("Rebuild search index", width="stretch", disabled=not jobs):
+        with st.spinner("Re-indexing..."):
+            s = api("post", "/jobs/reindex", timeout=120)
+        if s.status_code == 200:
+            failed = s.json()["failed"]
+            st.session_state.notice = ("warning", f"Failed: {failed}") if failed else ("success", "All postings re-indexed")
+        else:
+            st.session_state.notice = ("error", error_detail(s))
+        st.rerun()
+
+    st.subheader("Add a posting")
+    # cleared only after a successful save. clear_on_submit wiped a pasted
+    # posting on every 422 or 409 too. Widget values can't change once the
+    # widget exists in this run, so the save sets a flag and this runs first
+    if st.session_state.pop("clear_job_form", False):
+        for key in JOB_FORM_KEYS:
+            st.session_state[key] = ""
+    upload = st.file_uploader("Upload a .txt or .md file, or paste the text below", type=["txt", "md"])
+    with st.form("add_job"):
+        title = st.text_input("Job title", key="job_title")
+        company = st.text_input("Company", key="job_company")
+        location = st.text_input("Location (optional)", key="job_location")
+        url = st.text_input("Link (optional)", key="job_url")
+        text = st.text_area("Posting text", height=200, help="200 to 20,000 characters", key="job_text",
+                            disabled=upload is not None,
+                            placeholder="Using the uploaded file" if upload else "Paste the full posting")
+        if st.form_submit_button("Save posting", type="primary"):
+            body = {"title": title, "company": company, "location": location, "url": url, "source": "pasted",
+                    "text": text}
+            if upload is not None:
+                body["text"] = upload.getvalue().decode("utf-8", errors="replace")
+                body["source"] = "upload"
+            with st.spinner("Saving and indexing..."):
+                c = api("post", "/jobs", json=body, timeout=60)
+            if c.status_code == 201:
+                job = c.json()
+                note = "" if job["indexed"] else " It isn't searchable yet, use Rebuild search index."
+                # st.success renders Markdown too, the notice loaded a title's ![image](url)
+                st.session_state.notice = ("success", f"Saved {plain(job['title'])} at {plain(job['company'])}.{note}")
+                st.session_state.clear_job_form = True
+                st.rerun()
+            st.error(error_detail(c))
+
+
+# ── Ask ────────────────────────────────────────────────────────────────────
+
+def failure_hint(detail: str) -> str:
+    """What to check for each 503 the API sends, by its detail message."""
+    if detail == "Database unavailable":
+        return "Postgres isn't answering, check `docker-compose ps postgres`."
+    if detail == "Ollama unavailable":
+        return "Check `docker-compose ps ollama`."
+    if detail.startswith("Ollama returned 404"):
+        return "The model isn't pulled yet, check `docker-compose logs ollama-pull`."
+    if "timed out" in detail:
+        return "The model may still be loading, try again in a moment."
+    return "The cause is in `docker-compose logs backend`."
+
+
+def ask(question: str, job_ids: list[int]) -> dict:
+    body = {"question": question}
+    if job_ids:
+        body["job_ids"] = job_ids
+    try:
+        r = api("post", "/ask", json=body, timeout=ASK_TIMEOUT)
+    except requests.exceptions.Timeout:
+        return {"kind": "error", "content": f"No answer after {ASK_TIMEOUT}s. The model may still be loading."}
+    # the question is already in the chat, so the failure has to be a reply
+    # to it rather than a page error that leaves it unanswered
+    except requests.exceptions.RequestException as e:
+        return {"kind": "error", "content": f"Lost the connection to `{BACKEND_URL}` ({type(e).__name__})."}
+    if r.status_code == 422:
+        return {"kind": "warning", "content": error_detail(r)}
+    if r.status_code != 200:
+        detail = error_detail(r)
+        return {"kind": "error", "content": f"**{detail}** (HTTP {r.status_code}). {failure_hint(detail)}"}
+    try:
+        data = r.json()
+    except ValueError:
+        return {"kind": "error", "content": f"The API's reply wasn't JSON (HTTP {r.status_code})."}
+    return {"kind": "answer", "content": data["answer"], "confidence": data["confidence"],
+            "sources": data["sources"], "model": data.get("model"), "truncated": data.get("truncated", False)}
+
+
+def render(msg: dict):
+    with st.chat_message(msg["role"]):
+        kind = msg.get("kind", "answer")
+        if kind != "answer":
+            getattr(st, kind)(msg["content"])
+            return
+        st.markdown(safe_markdown(msg["content"]))
+        if msg["role"] != "assistant":
+            return
+        if msg.get("truncated"):
+            st.caption("The answer hit the length limit and was cut off.")
+        confidence = msg.get("confidence") if msg.get("confidence") in CONFIDENCE_COLOURS else "low"
+        st.badge(f"Confidence: {confidence}", color=CONFIDENCE_COLOURS[confidence])
+        sources = msg.get("sources") or []
+        with st.expander(f"Sources ({len(sources)})"):
+            if not sources:
+                st.caption("No saved posting was close enough to use. The model wasn't asked.")
+            for s in sources:
+                st.markdown(f"**\\[{s['n']}\\] {plain(s['title'])}** · {plain(s['company'])} · "
+                            f"distance {s['distance']}")
+                st.text(s["excerpt"])
+
+
+def ask_page():
+    st.header("Ask about your postings")
+    r = api("get", "/jobs", params={"limit": 100})
+    jobs = r.json() if r.status_code == 200 else []
+    if not jobs:
+        st.info("Save a posting on the Jobs page first.")
+    # the id keeps two postings with the same title and company apart, a dict
+    # keyed on the name alone silently dropped one of them
+    labels = {f"{j['title']} · {j['company']} (#{j['id']})": j["id"] for j in jobs}
+    picked = st.multiselect("Only these postings (optional)", list(labels))
+
+    for msg in st.session_state.chat:
+        render(msg)
+
+    if question := st.chat_input("e.g. Which of my saved jobs ask for Docker?", max_chars=500):
+        question = question.strip()
+        if question:
+            user_msg = {"role": "user", "kind": "answer", "content": question}
+            st.session_state.chat.append(user_msg)
+            render(user_msg)
+            with st.spinner("Searching your postings and asking the model..."):
+                reply = {"role": "assistant", **ask(question, [labels[p] for p in picked])}
+            st.session_state.chat.append(reply)
+            render(reply)
+
+    if st.session_state.chat:
+        st.button("Clear chat", on_click=lambda: st.session_state.update(chat=[]))
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
+
+health = fetch_health()
+sidebar(health)
+
+if health is None:
+    st.title("JobFit")
+    st.error(f"Can't reach the API at `{BACKEND_URL}`. Check `docker-compose ps backend`.")
+elif not st.session_state.token:
+    login_page()
+else:
+    try:
+        page = st.sidebar.radio("Page", ["Ask", "Jobs"], label_visibility="collapsed")
+        if page == "Ask":
+            ask_page()
+        else:
+            jobs_page()
+    except SessionExpired:
+        # the sidebar was already drawn as signed in, so start the run over
+        # and show the message on the login page instead
+        st.session_state.expired = True
+        st.rerun()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Lost the connection to `{BACKEND_URL}` ({type(e).__name__}).")

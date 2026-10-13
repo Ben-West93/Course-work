@@ -1,0 +1,59 @@
+"""
+ORM models. MVP tables only: users and job_postings.
+
+skills, user_skills, posting_skills and analyses from the design come with
+the match score, after the ask loop works end to end.
+"""
+
+from datetime import UTC, datetime
+
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from database import Base
+
+
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    # passive_deletes leaves it to the database's ON DELETE CASCADE instead of
+    # loading every posting just to delete it
+    postings: Mapped[list["JobPosting"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class JobPosting(Base):
+    __tablename__ = "job_postings"
+    # the same posting text saved twice would put duplicate chunks in every answer
+    __table_args__ = (UniqueConstraint("user_id", "content_hash", name="uq_posting_user_hash"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    company: Mapped[str] = mapped_column(String(200))
+    location: Mapped[str | None] = mapped_column(String(200))
+    url: Mapped[str | None] = mapped_column(String(500))
+    # pasted, upload or sample
+    source: Mapped[str] = mapped_column(String(10))
+    text: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    # set when the chunks are in ChromaDB. None means search won't find it
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    user: Mapped[User] = relationship(back_populates="postings")
+
+    @property
+    def indexed(self) -> bool:
+        return self.indexed_at is not None

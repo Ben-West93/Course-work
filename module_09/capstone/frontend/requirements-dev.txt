@@ -1,0 +1,3 @@
+# test tools on top of the runtime packages, never installed in the image
+-r requirements.txt
+pytest==9.1.1

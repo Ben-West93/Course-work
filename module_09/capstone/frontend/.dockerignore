@@ -1,0 +1,10 @@
+Dockerfile*
+.dockerignore
+**/__pycache__/
+**/*.pyc
+.env
+.streamlit/secrets.toml
+.DS_Store
+tests/
+pytest.ini
+requirements-dev.txt

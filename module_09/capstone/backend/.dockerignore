@@ -1,0 +1,12 @@
+# keeps the build context small and local state out of it. The runtime stage
+# copies the app files by name, tests/ and pytest.ini are for the test stage
+Dockerfile*
+.dockerignore
+# local SQLite and ChromaDB from running uvicorn outside Docker
+jobfit.db
+chroma/
+.pytest_cache/
+**/__pycache__/
+**/*.pyc
+.env
+.DS_Store

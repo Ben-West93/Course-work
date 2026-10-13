@@ -1,0 +1,6 @@
+# ruff check backend/ frontend/
+target-version = "py311"
+src = ["backend", "frontend"]
+
+[lint.isort]
+known-first-party = ["auth", "config", "database", "main", "models", "rag", "schemas"]

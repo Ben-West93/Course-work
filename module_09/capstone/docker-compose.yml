@@ -1,0 +1,124 @@
+# JobFit stack: postgres + ollama (+ one-shot model pull) + backend + frontend
+#
+#   cp .env.example .env          (optional, set JWT_SECRET to keep logins across restarts)
+#   docker-compose up --build     (first run pulls the model, ~2GB for llama3.2:3b)
+#   docker-compose ps -a          (ready when ollama-pull shows "Exited (0)")
+#   docker-compose exec backend python walkthrough.py   (end-to-end check, see the README)
+#   docker-compose down           (-v would also delete all three volumes)
+#
+# Services reach each other by service name on the compose network. Inside a
+# container localhost is that container, never the host or another service.
+
+# pinned so the volume names don't depend on the folder name
+name: jobfit
+
+services:
+
+  # ── Postgres: users and postings ───────────────────────────────────────
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jobfit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobfit}
+      POSTGRES_DB: ${POSTGRES_DB:-jobfit}
+    # not published: only the backend talks to it, over the compose network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # $$ so compose passes the variable through to the container's shell
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+      start_interval: 1s
+
+  # ── Ollama: local LLM runtime ──────────────────────────────────────────
+  ollama:
+    image: ollama/ollama
+    restart: unless-stopped
+    # for curl and the CLI from the host only. 11435 so it can't clash with
+    # an Ollama installed on the host, which already has 11434
+    ports:
+      - "127.0.0.1:${OLLAMA_HOST_PORT:-11435}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+  # ── One-shot: pulls the model, loads it once, exits ────────────────────
+  ollama-pull:
+    image: ollama/ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    # the volume keeps the model, so after the first run the pull is a quick check
+    command: ["ollama pull ${MODEL_NAME:-llama3.2:3b} && ollama run ${MODEL_NAME:-llama3.2:3b} 'Reply with OK' > /dev/null"]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+
+  # ── Backend: FastAPI + embedded ChromaDB ───────────────────────────────
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    # JWT_SECRET, MODEL_NAME, MAX_DISTANCE, DEBUG. Optional, a fresh clone
+    # without a .env starts on the defaults
+    env_file:
+      - path: .env
+        required: false
+    # these win over the same keys in .env
+    environment:
+      # same default as ollama-pull above, so the model the API asks for is
+      # always the one that was downloaded, .env or not
+      MODEL_NAME: ${MODEL_NAME:-llama3.2:3b}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobfit}:${POSTGRES_PASSWORD:-jobfit}@postgres:5432/${POSTGRES_DB:-jobfit}
+      OLLAMA_URL: http://ollama:11434
+      CHROMA_PATH: /app/chroma
+    volumes:
+      - chroma_data:/app/chroma
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # Ollama down only takes out /ask, so the API still starts. It doesn't
+      # wait for ollama-pull either: logins and postings work during the
+      # first download and /health says degraded until the model is ready
+      ollama:
+        condition: service_healthy
+        required: false
+    healthcheck:
+      # urlopen raises on the 503 /health returns when the database is down
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 2s
+
+  # ── Frontend: Streamlit ────────────────────────────────────────────────
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8501:8501"
+    environment:
+      # Streamlit's Python calls the API from inside this container, so it
+      # uses the service name, not localhost
+      BACKEND_URL: http://backend:8000
+    depends_on:
+      - backend
+
+# managed by Docker outside the containers. down keeps them, down -v deletes them
+volumes:
+  postgres_data:
+  chroma_data:
+  ollama_data:
