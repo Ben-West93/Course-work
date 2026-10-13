@@ -56,6 +56,11 @@ def local_path(path: str) -> str:
     return os.path.normpath(os.path.join(BASE_DIR, os.path.expanduser(path)))
 
 
+# HMAC only: the API signs and checks its own tokens, so there's no public key
+# to hand out. The value is the shortest secret each one allows, its hash size
+JWT_KEY_BYTES = {"HS256": 32, "HS384": 48, "HS512": 64}
+
+
 def normalise_db_url(url: str) -> str:
     # hosting providers hand out postgres:// URLs, which SQLAlchemy rejects,
     # and plain postgresql:// leaves the driver choice to SQLAlchemy. Only
@@ -79,8 +84,10 @@ class Settings:
         self.model_name = env_str("MODEL_NAME", "llama3.2:3b")
         # blank means a random secret per process (see auth.py), so tokens stop
         # working on restart. Set it in .env to keep logins across restarts
-        self.jwt_secret = env_str("JWT_SECRET", "")
-        self.token_minutes = env_int("TOKEN_MINUTES", "30", 1, 1440)
+        self.jwt_secret_key = env_str("JWT_SECRET_KEY", "")
+        algorithm = env_str("JWT_ALGORITHM", "HS256")
+        self.jwt_algorithm = algorithm.upper()
+        self.jwt_expire_minutes = env_int("JWT_EXPIRE_MINUTES", "30", 1, 1440)
         # chunks further than this from the question are dropped before the
         # prompt. Squared L2 on unit vectors, 0 (same) to 4 (opposite). On the
         # samples, off-topic questions were 1.56 and up, the hardest real ones 1.41
@@ -91,15 +98,18 @@ class Settings:
 
         if not self.ollama_url.startswith(("http://", "https://")):
             raise ValueError(f"OLLAMA_URL must start with http:// or https://, got {self.ollama_url!r}")
-        # PyJWT warns below 32 bytes for HS256, and a short secret can be brute-forced
-        if self.jwt_secret and len(self.jwt_secret.encode()) < 32:
-            raise ValueError("JWT_SECRET must be at least 32 bytes. Generate one with "
-                             "python -c 'import secrets; print(secrets.token_urlsafe(32))'")
+        if self.jwt_algorithm not in JWT_KEY_BYTES:
+            raise ValueError(f"JWT_ALGORITHM must be one of {', '.join(JWT_KEY_BYTES)}, got {algorithm!r}")
+        # PyJWT warns when the key is shorter than the hash, and a short secret can be brute-forced
+        min_bytes = JWT_KEY_BYTES[self.jwt_algorithm]
+        if self.jwt_secret_key and len(self.jwt_secret_key.encode()) < min_bytes:
+            raise ValueError(f"JWT_SECRET_KEY must be at least {min_bytes} bytes for {self.jwt_algorithm}. "
+                             f"Generate one with python -c 'import secrets; print(secrets.token_urlsafe({min_bytes}))'")
         if not self.database_url.startswith(("sqlite", "postgresql")):
             raise ValueError(f"DATABASE_URL must be a sqlite:// or postgresql+psycopg:// URL, got {self.database_url!r}")
 
     def __repr__(self) -> str:
-        shown = dict(vars(self), jwt_secret="<set>" if self.jwt_secret else "<random per start>")
+        shown = dict(vars(self), jwt_secret_key="<set>" if self.jwt_secret_key else "<random per start>")
         # the Postgres password sits in the URL
         if "@" in self.database_url:
             scheme, rest = self.database_url.split("://", 1)

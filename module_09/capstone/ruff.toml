@@ -3,4 +3,4 @@ target-version = "py311"
 src = ["backend", "frontend"]
 
 [lint.isort]
-known-first-party = ["auth", "config", "database", "main", "models", "rag", "schemas"]
+known-first-party = ["api_client", "auth", "config", "database", "main", "models", "rag_pipeline", "schemas"]

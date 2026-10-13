@@ -1,5 +1,6 @@
 """
-Password hashing (Argon2 through pwdlib) and JWT access tokens (PyJWT, HS256).
+Password hashing (Argon2 through pwdlib) and JWT access tokens (PyJWT, HS256 unless
+JWT_ALGORITHM picks HS384 or HS512).
 
 Routes get the logged-in user with a `user: CurrentUser` parameter.
 """
@@ -22,13 +23,14 @@ from schemas import MAX_ID, USERNAME
 
 log = logging.getLogger("uvicorn.error")
 
-ALGORITHM = "HS256"
+ALGORITHM = settings.jwt_algorithm
 
-if settings.jwt_secret:
-    SECRET_KEY = settings.jwt_secret
+if settings.jwt_secret_key:
+    SECRET_KEY = settings.jwt_secret_key
 else:
-    SECRET_KEY = secrets.token_urlsafe(32)
-    log.warning("JWT_SECRET is not set, using a random one. Tokens stop working when the API restarts")
+    # 64 bytes is long enough for every JWT_ALGORITHM config.py allows
+    SECRET_KEY = secrets.token_urlsafe(64)
+    log.warning("JWT_SECRET_KEY is not set, using a random one. Tokens stop working when the API restarts")
 
 password_hash = PasswordHash.recommended()
 # compared against when the username doesn't exist, so an unknown user takes
@@ -49,6 +51,10 @@ def hash_password(password: str) -> str:
     return password_hash.hash(password)
 
 
+def verify_password(plain: str, hashed: str) -> bool:
+    return password_hash.verify(plain, hashed)
+
+
 def authenticate(db: Session, username: str, password: str) -> User | None:
     username = username.strip().lower()
     # a name that could never have been registered (a NUL byte in it was a 500
@@ -57,14 +63,14 @@ def authenticate(db: Session, username: str, password: str) -> User | None:
     if USERNAME.match(username):
         user = db.query(User).filter(User.username == username).one_or_none()
     if user is None:
-        password_hash.verify(password, DUMMY_HASH)
+        verify_password(password, DUMMY_HASH)
         return None
-    return user if password_hash.verify(password, user.hashed_password) else None
+    return user if verify_password(password, user.hashed_password) else None
 
 
 def create_access_token(user_id: int) -> str:
     now = datetime.now(UTC)
-    claims = {"sub": str(user_id), "iat": now, "exp": now + timedelta(minutes=settings.token_minutes)}
+    claims = {"sub": str(user_id), "iat": now, "exp": now + timedelta(minutes=settings.jwt_expire_minutes)}
     return jwt.encode(claims, SECRET_KEY, algorithm=ALGORITHM)
 
 

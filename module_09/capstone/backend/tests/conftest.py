@@ -1,5 +1,6 @@
 """
-Shared setup for test_api.py and test_edge_cases.py.
+Shared setup for every backend test file: test_auth.py, test_crud.py and
+test_rag.py (one per part of the API), test_edge_cases.py and test_pipeline.py.
 
 By default the suite needs nothing running: SQLite and ChromaDB go to a
 throwaway temp folder, OLLAMA_URL points at a closed port (so any test that
@@ -30,7 +31,7 @@ if TEST_DATABASE_URL and "test" not in TEST_DATABASE_URL.rsplit("/", 1)[-1]:
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL or f"sqlite:///{os.path.join(TEST_DIR, 'test.db')}"
 os.environ["CHROMA_PATH"] = os.path.join(TEST_DIR, "chroma")
 os.environ["OLLAMA_URL"] = "http://127.0.0.1:9"
-os.environ["JWT_SECRET"] = "test-secret-only-for-the-pytest-suite-0123456789"
+os.environ["JWT_SECRET_KEY"] = "test-secret-only-for-the-pytest-suite-0123456789"
 
 import uuid
 
@@ -38,7 +39,25 @@ import pytest
 from fastapi.testclient import TestClient
 
 import database
+import rag_pipeline
 from main import app
+
+# a realistic posting for test_auth.py, test_crud.py and test_rag.py
+POSTING = {
+    "title": "Junior Backend Developer",
+    "company": "Example Logistics",
+    "location": "Remote",
+    "text": (
+        "Example Logistics moves freight for regional shippers.\n\n"
+        "## Requirements\n\n"
+        "- 2+ years of Python and FastAPI\n"
+        "- Strong SQL and PostgreSQL experience\n"
+        "- Docker for local development and deployment\n\n"
+        "## Nice to have\n\n"
+        "- Redis for caching and job queues\n"
+        "- AWS experience (ECS, RDS)\n"
+    ),
+}
 
 
 @pytest.fixture(scope="session")
@@ -65,3 +84,16 @@ def signup(client) -> dict:
 @pytest.fixture
 def headers(client):
     return signup(client)
+
+
+@pytest.fixture
+def fake_answer(monkeypatch):
+    """Stands in for the model. Returns the list of prompts it was sent."""
+    calls = []
+
+    def generate_answer(messages):
+        calls.append(messages)
+        return "Example Logistics asks for Python, FastAPI and Docker [1].", False
+
+    monkeypatch.setattr(rag_pipeline, "generate_answer", generate_answer)
+    return calls

@@ -1,58 +1,25 @@
 """
-UI tests: runs app.py with Streamlit's AppTest against a fake API, no
-backend needed.
+UI tests: runs app.py with Streamlit's AppTest against a fake API
+(conftest.py), no backend needed.
 
     cd frontend && pip install -r requirements-dev.txt && pytest -q
 
-`fake_api` swaps requests.request/get/post for a router keyed on
-(method, path), which is all app.py uses. Each test sets the API's replies,
-runs the script, and checks what would be on screen or in session state.
+Each test sets the API's replies, runs the script, and checks what would be
+on screen or in session state.
 """
 
-import json
+import ast
 from pathlib import Path
 
 import pytest
 import requests
 from streamlit.testing.v1 import AppTest
 
+from api_client import BACKEND_URL
+from tests.conftest import HEALTH, JOB, Reply
+
 APP = str(Path(__file__).resolve().parent.parent / "app.py")
-HEALTH = {"status": "ok", "database": "ok", "chroma": "ok", "ollama": "connected", "model_ready": True,
-          "model": "llama3.2:3b"}
-JOB = {"id": 1, "title": "Dev", "company": "Same Co", "location": None, "source": "pasted", "indexed": True}
 HOSTILE_TITLE = "![x](http://evil.example/t.png) $90k-$110k *Lead*"
-
-
-class Reply:
-    def __init__(self, status_code=200, body=None, text=None):
-        self.status_code, self._body = status_code, body
-        self.text = text if text is not None else json.dumps(body)
-
-    def json(self):
-        if self._body is None:
-            raise ValueError("not json")
-        return self._body
-
-
-@pytest.fixture
-def fake_api(monkeypatch):
-    """
-    Returns the routes dict. A value is a Reply, an exception to raise, or a
-    callable that gets the request's keyword arguments (json=, data=, ...).
-    """
-    routes = {("GET", "/health"): Reply(200, HEALTH), ("GET", "/jobs"): Reply(200, [JOB])}
-
-    def handler(method, url, **kwargs):
-        path = url.split("://", 1)[1].split("/", 1)[1].split("?")[0]
-        reply = routes.get((method.upper(), f"/{path}"), Reply(404, {"detail": "no such route"}))
-        if isinstance(reply, Exception):
-            raise reply
-        return reply(**kwargs) if callable(reply) else reply
-
-    monkeypatch.setattr(requests, "request", handler)
-    monkeypatch.setattr(requests, "get", lambda url, **kw: handler("GET", url, **kw))
-    monkeypatch.setattr(requests, "post", lambda url, **kw: handler("POST", url, **kw))
-    return routes
 
 
 def app(signed_in: bool = True) -> AppTest:
@@ -99,6 +66,33 @@ def test_wrong_password_shows_the_apis_message(fake_api):
     at.button[0].click().run()
     assert "Incorrect username or password" in all_text(at)
     assert at.session_state["token"] is None
+
+
+@pytest.mark.parametrize("failure", [requests.exceptions.ConnectionError(), requests.exceptions.ReadTimeout()])
+@pytest.mark.parametrize("form", [0, 1], ids=["sign-in", "create-account"])
+def test_api_going_away_during_sign_in_is_an_error_not_a_crash(fake_api, form, failure):
+    # /health answered, then the API went away before the form was sent.
+    # This was a ConnectionError traceback on the sign-in page
+    fake_api[("POST", "/auth/token")] = failure
+    fake_api[("POST", "/auth/register")] = failure
+    at = app(signed_in=False)
+    at.text_input[2 * form].set_value("someone")
+    at.text_input[2 * form + 1].set_value("password123")
+    at.button[form].click().run()
+    assert not at.exception
+    assert any(BACKEND_URL in e.value for e in at.error)
+    assert at.session_state["token"] is None
+
+
+def test_account_created_but_sign_in_failed_says_so(fake_api):
+    fake_api[("POST", "/auth/register")] = Reply(201, {"id": 1, "username": "someone", "created_at": "2026-10-13T00:00:00Z"})
+    fake_api[("POST", "/auth/token")] = Reply(503, {"detail": "Database unavailable"})
+    at = app(signed_in=False)
+    at.text_input[2].set_value("someone")
+    at.text_input[3].set_value("password123")
+    at.button[1].click().run()
+    assert not at.exception
+    assert any("Account created, but signing in failed: Database unavailable" in e.value for e in at.error)
 
 
 def test_expired_session_goes_back_to_the_login_page(fake_api):
@@ -166,6 +160,7 @@ def test_picked_postings_are_sent_as_job_ids(fake_api):
 
 @pytest.mark.parametrize("reply, kind, text", [
     (requests.exceptions.ConnectionError(), "error", "Lost the connection"),
+    (requests.exceptions.ReadTimeout(), "error", "The model may still be loading"),
     (Reply(200, None, "<html>proxy</html>"), "error", "wasn't JSON"),
     (Reply(422, {"detail": [{"loc": ["body", "question"], "msg": "String should have at least 3 characters"}]}),
      "warning", "question: String should have at least 3 characters"),
@@ -256,3 +251,57 @@ def test_hundred_posting_limit_is_shown(fake_api):
     fake_api[("GET", "/jobs")] = Reply(200, [dict(JOB, id=i) for i in range(100)])
     at = jobs_page(app())
     assert any("100 newest" in c.value for c in at.caption)
+
+
+def test_postings_failing_to_load_is_an_error_on_both_pages(fake_api):
+    fake_api[("GET", "/jobs")] = Reply(503, {"detail": "Database unavailable"})
+    at = app()
+    assert any("Couldn't load your postings for the filter: Database unavailable" in e.value for e in at.error)
+    # not told to save a posting they may well have
+    assert "Save a posting" not in all_text(at)
+    at = jobs_page(at)
+    assert any("Couldn't load postings: Database unavailable" in e.value for e in at.error)
+    assert not at.exception
+
+
+@pytest.mark.parametrize("route, label", [
+    (("DELETE", "/jobs/1"), "Delete"),
+    (("POST", "/jobs/samples"), "Load sample postings"),
+    (("POST", "/jobs/reindex"), "Rebuild search index"),
+])
+def test_jobs_page_actions_with_the_api_gone_show_an_error(fake_api, route, label):
+    fake_api[route] = requests.exceptions.ConnectionError()
+    at = jobs_page(app())
+    next(b for b in at.button if b.label == label).click().run()
+    assert not at.exception
+    assert any("Lost the connection" in e.value for e in at.error)
+    assert at.session_state["token"] == "token"
+
+
+def test_saving_when_the_api_times_out_keeps_the_form(fake_api):
+    fake_api[("POST", "/jobs")] = requests.exceptions.ReadTimeout()
+    at = jobs_page(app())
+    at.text_input(key="job_title").set_value("Dev")
+    at.text_area(key="job_text").set_value("x" * 300)
+    next(b for b in at.button if b.label == "Save posting").click().run()
+    assert not at.exception
+    assert any("after 60s" in e.value for e in at.error)
+    assert at.text_area(key="job_text").value == "x" * 300
+
+
+def test_expired_session_during_an_action_goes_back_to_the_login_page(fake_api):
+    fake_api[("DELETE", "/jobs/1")] = Reply(401, {"detail": "Could not validate credentials"})
+    at = jobs_page(app())
+    next(b for b in at.button if b.label == "Delete").click().run()
+    assert at.session_state["token"] is None
+    assert "session expired" in all_text(at).lower()
+
+
+def test_app_makes_no_http_calls_of_its_own():
+    # every call goes through api_client.py, as the course starter asks
+    tree = ast.parse(Path(APP).read_text())
+    imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)
+                for alias in node.names}
+    imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+    assert "api_client" in imported
+    assert not imported & {"requests", "httpx", "urllib", "urllib3", "http", "aiohttp"}

@@ -7,7 +7,7 @@ Swagger UI at http://localhost:8000/docs. Register, then use Authorize with the
 same username and password.
 
 Routes are thin: validation is in schemas.py, auth in auth.py, and the RAG
-steps (chunk, index, search, prompt, generate, score) in rag.py. The README's
+steps (chunk, index, search, prompt, generate, score) in rag_pipeline.py. The README's
 "How a question is answered" section walks through /ask step by step, and
 walkthrough.py runs it against the live services.
 
@@ -42,7 +42,7 @@ from sqlalchemy.orm import Session
 
 import auth
 import database
-import rag
+import rag_pipeline
 from auth import CurrentUser
 from config import settings
 from database import DbSession
@@ -109,9 +109,9 @@ def get_owned_job(job_id: int, user: User, db: Session) -> JobPosting:
 def try_index(job: JobPosting, db: Session) -> bool:
     """Index the posting and stamp indexed_at. A Chroma failure leaves it saved but unindexed."""
     try:
-        rag.index_posting(job)
+        rag_pipeline.index_posting(job)
     except Exception as e:  # noqa: BLE001 - Postgres is the source of truth, reindex fixes it later
-        rag.log.warning("indexing job %s failed: %r", job.id, e)
+        rag_pipeline.log.warning("indexing job %s failed: %r", job.id, e)
         job.indexed_at = None
     else:
         job.indexed_at = datetime.now(UTC)
@@ -143,7 +143,7 @@ async def validation_error(_request: Request, exc: RequestValidationError):
 @app.exception_handler(OperationalError)
 @app.exception_handler(InterfaceError)
 async def database_unavailable(_request: Request, exc: Exception):
-    rag.log.warning("database unavailable: %s", str(exc).splitlines()[0])
+    rag_pipeline.log.warning("database unavailable: %s", str(exc).splitlines()[0])
     return JSONResponse(status_code=503, content={"detail": "Database unavailable"})
 
 
@@ -155,12 +155,12 @@ def health(response: Response):
     # don't (Chroma broken, Ollama down, model not pulled yet). down: no database
     db_ok = database.ping()
     try:
-        rag.count_chunks()
+        rag_pipeline.count_chunks()
         chroma_ok = True
     except Exception as e:  # noqa: BLE001
-        rag.log.warning("ChromaDB health check failed: %r", e)
+        rag_pipeline.log.warning("ChromaDB health check failed: %r", e)
         chroma_ok = False
-    ollama_ok, model_ready = rag.ollama_status()
+    ollama_ok, model_ready = rag_pipeline.ollama_status()
 
     if not db_ok:
         status_ = "down"
@@ -205,7 +205,7 @@ def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession):
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return Token(access_token=auth.create_access_token(user.id), expires_in=settings.token_minutes * 60)
+    return Token(access_token=auth.create_access_token(user.id), expires_in=settings.jwt_expire_minutes * 60)
 
 
 @app.get("/me", response_model=UserOut)
@@ -221,9 +221,9 @@ def delete_me(user: CurrentUser, db: DbSession):
     # after the commit: if this fails the chunks are orphans, which /ask
     # already drops because their postings aren't in the database
     try:
-        rag.delete_user(user_id)
+        rag_pipeline.delete_user(user_id)
     except Exception as e:  # noqa: BLE001
-        rag.log.warning("removing chunks for user %s failed: %r", user_id, e)
+        rag_pipeline.log.warning("removing chunks for user %s failed: %r", user_id, e)
 
 
 # ── Job postings ───────────────────────────────────────────────────────────
@@ -254,7 +254,7 @@ def create_job(req: JobCreate, user: CurrentUser, db: DbSession):
 def add_samples(user: CurrentUser, db: DbSession):
     existing = set(db.scalars(select(JobPosting.content_hash).where(JobPosting.user_id == user.id)))
     added = skipped = 0
-    for sample in rag.load_samples():
+    for sample in rag_pipeline.load_samples():
         digest = content_hash(sample["text"])
         if digest in existing:
             skipped += 1
@@ -282,9 +282,9 @@ def reindex(user: CurrentUser, db: DbSession):
     failed = [job.id for job in jobs if not try_index(job, db)]
     # then clears out orphans from postings deleted while Chroma was failing
     try:
-        rag.delete_orphans(user.id, [job.id for job in jobs])
+        rag_pipeline.delete_orphans(user.id, [job.id for job in jobs])
     except Exception as e:  # noqa: BLE001 - orphans are filtered out of /ask anyway
-        rag.log.warning("removing orphan chunks for user %s failed: %r", user.id, e)
+        rag_pipeline.log.warning("removing orphan chunks for user %s failed: %r", user.id, e)
     return ReindexResult(indexed=len(jobs) - len(failed), failed=failed)
 
 
@@ -319,9 +319,9 @@ def delete_job(job_id: JobId, user: CurrentUser, db: DbSession):
     db.delete(job)
     db.commit()
     try:
-        rag.delete_posting(job_id)
+        rag_pipeline.delete_posting(job_id)
     except Exception as e:  # noqa: BLE001 - orphans are filtered out of /ask anyway
-        rag.log.warning("removing chunks for job %s failed: %r", job_id, e)
+        rag_pipeline.log.warning("removing chunks for job %s failed: %r", job_id, e)
 
 
 # ── Ask ────────────────────────────────────────────────────────────────────
@@ -350,11 +350,11 @@ def ask(req: AskRequest, user: CurrentUser, db: DbSession):
         return AskResponse(answer=NO_POSTINGS_ANSWER, confidence="low", sources=[], model=None)
 
     # "what does Cobalt Freight want?" only searches Cobalt's postings
-    job_ids = req.job_ids or rag.named_postings(req.question, jobs.values())
+    job_ids = req.job_ids or rag_pipeline.named_postings(req.question, jobs.values())
     try:
-        found = rag.retrieve(user.id, req.question, job_ids, req.n_results, rag.company_words(jobs.values()))
+        found = rag_pipeline.retrieve(user.id, req.question, job_ids, req.n_results, rag_pipeline.company_words(jobs.values()))
     except Exception as e:
-        rag.log.warning("ChromaDB search failed: %r", e)
+        rag_pipeline.log.warning("ChromaDB search failed: %r", e)
         raise HTTPException(status_code=503, detail="ChromaDB search failed") from e
 
     # Postgres is the source of truth: a chunk whose posting is gone is an orphan
@@ -362,13 +362,13 @@ def ask(req: AskRequest, user: CurrentUser, db: DbSession):
     if not chunks:
         return AskResponse(answer=NO_MATCH_ANSWER, confidence="low", sources=[], model=None)
 
-    answer, truncated = rag.generate(rag.build_prompt(req.question, chunks))
+    answer, truncated = rag_pipeline.generate_answer(rag_pipeline.build_prompt(req.question, chunks))
     sources = [
         Source(n=i, job_id=c["job_id"], title=jobs[c["job_id"]].title, company=jobs[c["job_id"]].company,
                chunk=c["chunk"], excerpt=c["excerpt"], distance=c["distance"])
         for i, c in enumerate(chunks, start=1)
     ]
     # an answer cut off at the token cap is usually the model repeating itself
-    confidence = "low" if truncated else rag.compute_confidence(chunks, answer)
+    confidence = "low" if truncated else rag_pipeline.compute_confidence(chunks, answer)
     return AskResponse(answer=answer, confidence=confidence, sources=sources, model=settings.model_name,
                        truncated=truncated)

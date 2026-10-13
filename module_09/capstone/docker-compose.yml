@@ -1,6 +1,6 @@
 # JobFit stack: postgres + ollama (+ one-shot model pull) + backend + frontend
 #
-#   cp .env.example .env          (optional, set JWT_SECRET to keep logins across restarts)
+#   cp .env.example .env          (optional, set JWT_SECRET_KEY to keep logins across restarts)
 #   docker-compose up --build     (first run pulls the model, ~2GB for llama3.2:3b)
 #   docker-compose ps -a          (ready when ollama-pull shows "Exited (0)")
 #   docker-compose exec backend python walkthrough.py   (end-to-end check, see the README)
@@ -71,7 +71,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
-    # JWT_SECRET, MODEL_NAME, MAX_DISTANCE, DEBUG. Optional, a fresh clone
+    # JWT_*, MODEL_NAME, MAX_DISTANCE, DEBUG. Optional, a fresh clone
     # without a .env starts on the defaults
     env_file:
       - path: .env

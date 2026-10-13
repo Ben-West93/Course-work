@@ -40,6 +40,8 @@ from types import SimpleNamespace
 import jwt
 import requests
 
+from config import settings
+
 API_URL = os.environ.get("API_URL", "http://localhost:8000").rstrip("/")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://frontend:8501").rstrip("/")
 IN_DOCKER = os.path.exists("/.dockerenv")
@@ -131,7 +133,9 @@ def main(keep: bool) -> int:
     claims = jwt.decode(token, options={"verify_signature": False})
     show("user", username)
     show("token claims", claims)
-    check("token expires 30 minutes after it was issued", claims["exp"] - claims["iat"] == 30 * 60)
+    # same environment as the API (docker-compose exec), so the same JWT_EXPIRE_MINUTES
+    minutes = settings.jwt_expire_minutes
+    check(f"token expires {minutes} minutes after it was issued", claims["exp"] - claims["iat"] == minutes * 60)
     me = api("get", "/me", token).json()
     check("GET /me returns the same user", me["username"] == username)
     check("the same request without the token is a 401", api("get", "/me").status_code == 401)
@@ -152,7 +156,7 @@ def main(keep: bool) -> int:
     # ── 4 ─────────────────────────────────────────────────────────────────
     # imported here, not at the top: these open their own connections to the
     # same Postgres and ChromaDB the API uses, and only need to read
-    import rag
+    import rag_pipeline
     from database import SessionLocal
     from models import JobPosting, User
 
@@ -170,12 +174,12 @@ def main(keep: bool) -> int:
 
     # ── 5 ─────────────────────────────────────────────────────────────────
     stage(5, "Chunks")
-    expected = rag.chunk_posting(text)
-    stored = rag.collection.get(where={"job_id": target["id"]}, include=["documents", "metadatas"])
+    expected = rag_pipeline.chunk_posting(text)
+    stored = rag_pipeline.collection.get(where={"job_id": target["id"]}, include=["documents", "metadatas"])
     pairs = sorted(zip(stored["metadatas"], stored["documents"]), key=lambda p: p[0]["chunk"])
-    header = rag.chunk_header(row)
+    header = rag_pipeline.chunk_header(row)
     show("chunker", f"{len(text)} chars -> {len(expected)} chunks of {[len(c) for c in expected]} chars "
-                    f"(max {rag.MAX_CHUNK_CHARS})")
+                    f"(max {rag_pipeline.MAX_CHUNK_CHARS})")
     show("header", repr(header))
     for meta, doc in pairs:
         print(f"   chunk {meta['chunk']}  user_id={meta['user_id']} job_id={meta['job_id']}")
@@ -183,19 +187,19 @@ def main(keep: bool) -> int:
     check("ChromaDB holds exactly the chunks the chunker makes", [d for _, d in pairs] == [f"{header}\n\n{c}" for c in expected])
     check("every chunk is tagged with this user and posting",
           all(m["user_id"] == user_id and m["job_id"] == target["id"] for m, _ in pairs))
-    check(f"no chunk is over {rag.MAX_CHUNK_CHARS} characters", all(len(c) <= rag.MAX_CHUNK_CHARS for c in expected))
+    check(f"no chunk is over {rag_pipeline.MAX_CHUNK_CHARS} characters", all(len(c) <= rag_pipeline.MAX_CHUNK_CHARS for c in expected))
 
     # ── 6 ─────────────────────────────────────────────────────────────────
     stage(6, "Retrieval")
     show("question", QUESTION)
     saved = [SimpleNamespace(**j) for j in jobs]
-    named = rag.named_postings(QUESTION, saved)
+    named = rag_pipeline.named_postings(QUESTION, saved)
     show("named company", f"{named} (the question names {COMPANY}, so only its posting is searched, "
                           f"with no distance cutoff)")
     # company names don't count as keywords, every chunk's header has them
-    ignore = rag.company_words(saved)
-    show("keywords", rag.keywords(QUESTION, ignore))
-    found = rag.retrieve(user_id, QUESTION, named, 5, ignore)
+    ignore = rag_pipeline.company_words(saved)
+    show("keywords", rag_pipeline.keywords(QUESTION, ignore))
+    found = rag_pipeline.retrieve(user_id, QUESTION, named, 5, ignore)
     for c in found:
         via = f"keyword {c['keyword']!r}" if c.get("keyword") else "vector"
         show(f"chunk {c['chunk']}", f"distance {c['distance']:.4f}  {via:<20} {c['excerpt'][:50]!r}")
@@ -205,14 +209,14 @@ def main(keep: bool) -> int:
 
     # ── 7 ─────────────────────────────────────────────────────────────────
     stage(7, "Prompt")
-    system, user = rag.build_prompt(QUESTION, found)
+    system, user = rag_pipeline.build_prompt(QUESTION, found)
     print("   system:")
     print(indent(system["content"]))
     print("   user (first excerpt, then the reminder and the question that close every prompt):")
     print(indent(user["content"].split("\n\n[2]")[0] + "\n…\n" + "\n\n".join(user["content"].rsplit("\n\n", 2)[1:])))
     check("one numbered excerpt per retrieved chunk", len(re.findall(r"^\[\d+\] ", user["content"], re.MULTILINE)) == len(found))
     check("the question comes last, right after the reminder",
-          user["content"].endswith(f"{rag.INJECTION_REMINDER}\n\nQuestion: {QUESTION}"))
+          user["content"].endswith(f"{rag_pipeline.INJECTION_REMINDER}\n\nQuestion: {QUESTION}"))
     check("posting text is only in the user message", found[0]["excerpt"] not in system["content"])
 
     # ── 8 ─────────────────────────────────────────────────────────────────
@@ -229,7 +233,7 @@ def main(keep: bool) -> int:
     show("model", f"{body['model']} truncated={body['truncated']}")
     for s in body["sources"]:
         show(f"source [{s['n']}]", f"{s['company']} chunk {s['chunk']} distance {s['distance']}")
-    valid, invalid = rag.citations(body["answer"], len(body["sources"]))
+    valid, invalid = rag_pipeline.citations(body["answer"], len(body["sources"]))
     check("the API retrieved the same chunks as stage 6, in the same order",
           [(s["job_id"], s["chunk"]) for s in body["sources"]] == [(c["job_id"], c["chunk"]) for c in found])
     check("every source is numbered like its excerpt in the prompt",
@@ -237,15 +241,15 @@ def main(keep: bool) -> int:
     check("the answer cites at least one excerpt, and only ones that exist", bool(valid) and not invalid,
           f"cited {sorted(valid | invalid)}")
     check("the answer states the fact from the posting ($32 per hour)", bool(EXPECTED_FACT.search(body["answer"])))
-    expected_confidence = "low" if body["truncated"] else rag.compute_confidence(found, body["answer"])
+    expected_confidence = "low" if body["truncated"] else rag_pipeline.compute_confidence(found, body["answer"])
     check(f"confidence matches the scoring rules ({expected_confidence})", body["confidence"] == expected_confidence)
     check("answered by the configured model", body["model"] == health["model"])
 
     # ── 9 ─────────────────────────────────────────────────────────────────
     stage(9, "Open question")
     show("question", OPEN_QUESTION)
-    show("named company", f"{rag.named_postings(OPEN_QUESTION, saved)} (none, so all 8 postings are searched)")
-    show("keywords", rag.keywords(OPEN_QUESTION, ignore))
+    show("named company", f"{rag_pipeline.named_postings(OPEN_QUESTION, saved)} (none, so all 8 postings are searched)")
+    show("keywords", rag_pipeline.keywords(OPEN_QUESTION, ignore))
     r = api("post", "/ask", token, json={"question": OPEN_QUESTION})
     body = r.json()
     if not check("answered", r.status_code == 200, body.get("detail", "")):
@@ -258,7 +262,7 @@ def main(keep: bool) -> int:
     check("both postings that offer equity reach the model", OFFERS_EQUITY <= cited, f"got {sorted(cited)}")
     check("every excerpt mentions equity (far chunks without it were dropped)",
           all("equity" in s["excerpt"].lower() for s in body["sources"]))
-    valid, invalid = rag.citations(body["answer"], len(body["sources"]))
+    valid, invalid = rag_pipeline.citations(body["answer"], len(body["sources"]))
     check("the answer cites only excerpts that exist", not invalid, f"cited {sorted(invalid)}")
     check("the answer names both companies", all(c.split()[0] in body["answer"] for c in OFFERS_EQUITY))
 
@@ -294,7 +298,7 @@ def main(keep: bool) -> int:
         tokens.remove(t)
     with SessionLocal() as db:
         left = db.query(JobPosting).filter(JobPosting.user_id == user_id).count()
-    chunks_left = len(rag.collection.get(where={"user_id": user_id}, include=[])["ids"])
+    chunks_left = len(rag_pipeline.collection.get(where={"user_id": user_id}, include=[])["ids"])
     show("left behind", f"{left} rows, {chunks_left} chunks")
     check("the user's postings went with them (ON DELETE CASCADE)", left == 0)
     check("and so did their chunks", chunks_left == 0)

@@ -12,23 +12,22 @@ Pages and the API calls behind them:
     Ask                        GET /jobs (for the filter), POST /ask
     sidebar, every page        GET /health
 
+Every one of those calls goes through api_client.py. Its errors are shown
+as messages on the page, never as a traceback.
+
 Everything here runs on the Streamlit server, not in the browser, so the JWT
 never reaches the browser. Anything that came from a user or the model is
 escaped before it goes into st.markdown (plain() and safe_markdown()).
-Tests: tests/test_app.py.
+Tests: tests/test_app.py and tests/test_api_client.py.
 """
 
-import os
 import re
 
-import requests
 import streamlit as st
 
-# this runs in the frontend container, not the browser, so it reaches the API
-# by its compose service name. localhost here would be this container
-BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
-# the backend gives Ollama up to 120s, so wait a bit longer than that
-ASK_TIMEOUT = 150
+import api_client
+from api_client import BACKEND_URL, ApiError, ApiTimeout, SessionExpired
+
 CONFIDENCE_COLOURS = {"high": "green", "medium": "orange", "low": "red"}
 JOB_FORM_KEYS = ("job_title", "job_company", "job_location", "job_url", "job_text")
 
@@ -40,40 +39,6 @@ for key, default in [("token", None), ("username", None), ("chat", []), ("notice
         st.session_state[key] = default
 
 
-class SessionExpired(Exception):
-    pass
-
-
-def error_detail(r: requests.Response) -> str:
-    # app errors are {"detail": "..."}, 422s are a list of pydantic errors
-    try:
-        body = r.json()
-    except ValueError:
-        return r.text[:200] or f"HTTP {r.status_code}"
-    detail = body.get("detail") if isinstance(body, dict) else None
-    if isinstance(detail, list) and detail:
-        parts = []
-        for e in detail:
-            if isinstance(e, dict):
-                field = ".".join(str(p) for p in e.get("loc", [])[1:])
-                msg = str(e.get("msg", e)).removeprefix("Value error, ")
-                parts.append(f"{field}: {msg}" if field else msg)
-            else:
-                parts.append(str(e))
-        return "; ".join(parts)
-    return str(detail or f"HTTP {r.status_code}")
-
-
-def api(method: str, path: str, timeout: float = 30, **kwargs) -> requests.Response:
-    headers = {"Authorization": f"Bearer {st.session_state.token}"} if st.session_state.token else {}
-    r = requests.request(method, f"{BACKEND_URL}{path}", headers=headers, timeout=timeout, **kwargs)
-    # 30-minute tokens, or a backend restart without JWT_SECRET set
-    if r.status_code == 401 and st.session_state.token:
-        logout()
-        raise SessionExpired
-    return r
-
-
 def logout():
     st.session_state.token = None
     st.session_state.username = None
@@ -82,10 +47,13 @@ def logout():
 
 def login(username: str, password: str) -> str | None:
     """None on success, otherwise the error to show."""
-    r = requests.post(f"{BACKEND_URL}/auth/token", data={"username": username, "password": password}, timeout=10)
-    if r.status_code != 200:
-        return error_detail(r)
-    st.session_state.token = r.json()["access_token"]
+    try:
+        token = api_client.login(username, password)
+    # a wrong password, or the API going away between the health check and
+    # the click. The second used to be a traceback on the sign-in page
+    except ApiError as e:
+        return str(e)
+    st.session_state.token = token
     st.session_state.username = username.strip().lower()
     return None
 
@@ -113,13 +81,6 @@ def safe_markdown(text: str) -> str:
     # clickable link. "[text](url)" loses its "(" and "://" gets a word joiner
     text = text.replace("$", "\\$").replace("![", "!\\[").replace("](", "]\\(")
     return text.replace("://", ":" + WORD_JOINER + "//").replace("www.", "www" + WORD_JOINER + ".")
-
-
-def fetch_health() -> dict | None:
-    try:
-        return requests.get(f"{BACKEND_URL}/health", timeout=5).json()
-    except (requests.exceptions.RequestException, ValueError):
-        return None
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────
@@ -163,13 +124,16 @@ def login_page():
         username = st.text_input("Username", help="3-50 characters: letters, digits, _ . -")
         password = st.text_input("Password", type="password", help="At least 8 characters")
         if st.form_submit_button("Create account", type="primary"):
-            r = requests.post(f"{BACKEND_URL}/auth/register",
-                              json={"username": username, "password": password}, timeout=10)
-            if r.status_code != 201:
-                st.error(error_detail(r))
+            try:
+                api_client.register(username, password)
+            except ApiError as e:
+                st.error(str(e))
             else:
-                login(username, password)
-                st.rerun()
+                error = login(username, password)
+                if error:
+                    st.error(f"Account created, but signing in failed: {error}")
+                else:
+                    st.rerun()
 
 
 # ── Jobs ───────────────────────────────────────────────────────────────────
@@ -181,10 +145,11 @@ def jobs_page():
         getattr(st, kind)(message)
         st.session_state.notice = None
 
-    r = api("get", "/jobs", params={"limit": 100})
-    jobs = r.json() if r.status_code == 200 else []
-    if r.status_code != 200:
-        st.error(f"Couldn't load postings: {error_detail(r)}")
+    try:
+        jobs = api_client.list_jobs(st.session_state.token)
+    except ApiError as e:
+        st.error(f"Couldn't load postings: {e}")
+        jobs = []
 
     if not jobs:
         st.info("Nothing saved yet. Add a posting below, or load the sample postings.")
@@ -197,26 +162,29 @@ def jobs_page():
             left.caption(" · ".join(filter(None, [job.get("location"), job["source"],
                                                   "indexed" if job["indexed"] else "not indexed"])))
             if right.button("Delete", key=f"del_{job['id']}"):
-                d = api("delete", f"/jobs/{job['id']}")
-                st.session_state.notice = (("success", f"Deleted {plain(job['title'])}") if d.status_code == 204
-                                           else ("error", error_detail(d)))
+                try:
+                    api_client.delete_job(st.session_state.token, job["id"])
+                    st.session_state.notice = ("success", f"Deleted {plain(job['title'])}")
+                except ApiError as e:
+                    st.session_state.notice = ("error", str(e))
                 st.rerun()
 
     cols = st.columns(2)
     if cols[0].button("Load sample postings", width="stretch"):
-        with st.spinner("Saving and indexing the samples..."):
-            s = api("post", "/jobs/samples", timeout=120)
-        st.session_state.notice = (("success", f"Added {s.json()['added']}, skipped {s.json()['skipped']} already saved")
-                                   if s.status_code == 200 else ("error", error_detail(s)))
+        try:
+            with st.spinner("Saving and indexing the samples..."):
+                s = api_client.add_samples(st.session_state.token)
+            st.session_state.notice = ("success", f"Added {s['added']}, skipped {s['skipped']} already saved")
+        except ApiError as e:
+            st.session_state.notice = ("error", str(e))
         st.rerun()
     if cols[1].button("Rebuild search index", width="stretch", disabled=not jobs):
-        with st.spinner("Re-indexing..."):
-            s = api("post", "/jobs/reindex", timeout=120)
-        if s.status_code == 200:
-            failed = s.json()["failed"]
+        try:
+            with st.spinner("Re-indexing..."):
+                failed = api_client.reindex(st.session_state.token)["failed"]
             st.session_state.notice = ("warning", f"Failed: {failed}") if failed else ("success", "All postings re-indexed")
-        else:
-            st.session_state.notice = ("error", error_detail(s))
+        except ApiError as e:
+            st.session_state.notice = ("error", str(e))
         st.rerun()
 
     st.subheader("Add a posting")
@@ -241,16 +209,17 @@ def jobs_page():
             if upload is not None:
                 body["text"] = upload.getvalue().decode("utf-8", errors="replace")
                 body["source"] = "upload"
-            with st.spinner("Saving and indexing..."):
-                c = api("post", "/jobs", json=body, timeout=60)
-            if c.status_code == 201:
-                job = c.json()
+            try:
+                with st.spinner("Saving and indexing..."):
+                    job = api_client.create_job(st.session_state.token, body)
+            except ApiError as e:
+                st.error(str(e))
+            else:
                 note = "" if job["indexed"] else " It isn't searchable yet, use Rebuild search index."
                 # st.success renders Markdown too, the notice loaded a title's ![image](url)
                 st.session_state.notice = ("success", f"Saved {plain(job['title'])} at {plain(job['company'])}.{note}")
                 st.session_state.clear_job_form = True
                 st.rerun()
-            st.error(error_detail(c))
 
 
 # ── Ask ────────────────────────────────────────────────────────────────────
@@ -269,26 +238,19 @@ def failure_hint(detail: str) -> str:
 
 
 def ask(question: str, job_ids: list[int]) -> dict:
-    body = {"question": question}
-    if job_ids:
-        body["job_ids"] = job_ids
     try:
-        r = api("post", "/ask", json=body, timeout=ASK_TIMEOUT)
-    except requests.exceptions.Timeout:
-        return {"kind": "error", "content": f"No answer after {ASK_TIMEOUT}s. The model may still be loading."}
+        data = api_client.ask(question, st.session_state.token, job_ids)
     # the question is already in the chat, so the failure has to be a reply
     # to it rather than a page error that leaves it unanswered
-    except requests.exceptions.RequestException as e:
-        return {"kind": "error", "content": f"Lost the connection to `{BACKEND_URL}` ({type(e).__name__})."}
-    if r.status_code == 422:
-        return {"kind": "warning", "content": error_detail(r)}
-    if r.status_code != 200:
-        detail = error_detail(r)
-        return {"kind": "error", "content": f"**{detail}** (HTTP {r.status_code}). {failure_hint(detail)}"}
-    try:
-        data = r.json()
-    except ValueError:
-        return {"kind": "error", "content": f"The API's reply wasn't JSON (HTTP {r.status_code})."}
+    except ApiTimeout as e:
+        return {"kind": "error", "content": f"{e} The model may still be loading."}
+    except ApiError as e:
+        if e.status_code == 422:
+            return {"kind": "warning", "content": str(e)}
+        # no usable reply: lost connection, or not JSON
+        if e.status_code is None:
+            return {"kind": "error", "content": str(e)}
+        return {"kind": "error", "content": f"**{e}** (HTTP {e.status_code}). {failure_hint(str(e))}"}
     return {"kind": "answer", "content": data["answer"], "confidence": data["confidence"],
             "sources": data["sources"], "model": data.get("model"), "truncated": data.get("truncated", False)}
 
@@ -318,10 +280,14 @@ def render(msg: dict):
 
 def ask_page():
     st.header("Ask about your postings")
-    r = api("get", "/jobs", params={"limit": 100})
-    jobs = r.json() if r.status_code == 200 else []
-    if not jobs:
-        st.info("Save a posting on the Jobs page first.")
+    jobs = []
+    try:
+        jobs = api_client.list_jobs(st.session_state.token)
+        if not jobs:
+            st.info("Save a posting on the Jobs page first.")
+    # not "save a posting first" when the user may well have some
+    except ApiError as e:
+        st.error(f"Couldn't load your postings for the filter: {e}")
     # the id keeps two postings with the same title and company apart, a dict
     # keyed on the name alone silently dropped one of them
     labels = {f"{j['title']} · {j['company']} (#{j['id']})": j["id"] for j in jobs}
@@ -347,25 +313,28 @@ def ask_page():
 
 # ── Main ───────────────────────────────────────────────────────────────────
 
-health = fetch_health()
+health = api_client.health_check()
 sidebar(health)
 
 if health is None:
     st.title("JobFit")
     st.error(f"Can't reach the API at `{BACKEND_URL}`. Check `docker-compose ps backend`.")
-elif not st.session_state.token:
-    login_page()
 else:
     try:
-        page = st.sidebar.radio("Page", ["Ask", "Jobs"], label_visibility="collapsed")
-        if page == "Ask":
-            ask_page()
+        if not st.session_state.token:
+            login_page()
         else:
-            jobs_page()
+            page = st.sidebar.radio("Page", ["Ask", "Jobs"], label_visibility="collapsed")
+            if page == "Ask":
+                ask_page()
+            else:
+                jobs_page()
     except SessionExpired:
         # the sidebar was already drawn as signed in, so start the run over
         # and show the message on the login page instead
+        logout()
         st.session_state.expired = True
         st.rerun()
-    except requests.exceptions.RequestException as e:
-        st.error(f"Lost the connection to `{BACKEND_URL}` ({type(e).__name__}).")
+    # the pages handle their own API errors, this catches any one that slips past
+    except ApiError as e:
+        st.error(str(e))

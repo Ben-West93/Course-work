@@ -52,7 +52,7 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /root/.cache/chroma /root/.cache/chroma
 
-COPY auth.py config.py database.py main.py models.py rag.py schemas.py ./
+COPY auth.py config.py database.py main.py models.py rag_pipeline.py schemas.py ./
 # docker-compose exec backend python walkthrough.py, see the README
 COPY walkthrough.py ./
 COPY seed/ seed/

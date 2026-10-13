@@ -3,14 +3,14 @@ RAG over the user's saved job postings: chunking, ChromaDB storage and
 search, the prompt, the Ollama call and the citation/confidence checks.
 main.py wires these into /jobs and /ask.
 
-    python rag.py        # chunk the sample postings and print the result
+    python rag_pipeline.py        # chunk the sample postings and print the result
 
 Saving a posting (POST /jobs, PATCH, /jobs/samples, /jobs/reindex):
     chunk_posting -> chunk_header -> index_posting
 
 Answering a question (POST /ask):
     named_postings -> retrieve (vector search + keyword pass) -> build_prompt
-    -> generate -> compute_confidence
+    -> generate_answer -> compute_confidence
 
 Embeddings come from ChromaDB's default all-MiniLM-L6-v2, run locally (it's
 baked into the Docker image). Ollama is only used to write the answer, so
@@ -378,7 +378,7 @@ MAX_ANSWER_TOKENS = 300
 NUM_CTX = 4096
 
 
-def generate(messages: list[dict]) -> tuple[str, bool]:
+def generate_answer(messages: list[dict]) -> tuple[str, bool]:
     """(answer, truncated). Truncated means it stopped at MAX_ANSWER_TOKENS."""
     payload = {
         "model": settings.model_name,
