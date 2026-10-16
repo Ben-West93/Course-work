@@ -1,7 +1,12 @@
 .env
+# the virtualenv from the README's "Running without Docker", under either name
+.venv/
+venv/
 # local SQLite and ChromaDB from running uvicorn outside Docker
 backend/jobfit.db
 backend/chroma/
+# CHROMA_PATH pointed at a folder named after the compose volume
+chroma_data/
 __pycache__/
 .pytest_cache/
 .ruff_cache/

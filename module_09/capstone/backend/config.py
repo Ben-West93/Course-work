@@ -15,11 +15,13 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def env_str(name: str, default: str) -> str:
+    """The variable, stripped, or the default when it's unset or blank."""
     # `MODEL_NAME=` in .env sets the variable to "", which is never usable
     return os.environ.get(name, "").strip() or default
 
 
 def env_int(name: str, default: str, low: int, high: int) -> int:
+    """The variable as a whole number from low to high. Anything else raises ValueError naming it."""
     raw = env_str(name, default)
     try:
         value = int(raw)
@@ -31,6 +33,7 @@ def env_int(name: str, default: str, low: int, high: int) -> int:
 
 
 def env_float(name: str, default: str, low: float, high: float) -> float:
+    """The variable as a number from low to high. Anything else raises ValueError naming it."""
     raw = env_str(name, default)
     try:
         value = float(raw)
@@ -42,6 +45,7 @@ def env_float(name: str, default: str, low: float, high: float) -> float:
 
 
 def env_bool(name: str, default: str) -> bool:
+    """true, 1, yes or on, or false, 0, no or off, in any case. Anything else raises ValueError."""
     raw = env_str(name, default).lower()
     if raw in ("true", "1", "yes", "on"):
         return True
@@ -51,8 +55,10 @@ def env_bool(name: str, default: str) -> bool:
 
 
 def local_path(path: str) -> str:
-    # relative paths are taken from backend/, so uvicorn and pytest find the
-    # same files wherever they're started from
+    """
+    The path made absolute from backend/, so uvicorn and pytest find the same
+    files wherever they're started from.
+    """
     return os.path.normpath(os.path.join(BASE_DIR, os.path.expanduser(path)))
 
 
@@ -62,6 +68,7 @@ JWT_KEY_BYTES = {"HS256": 32, "HS384": 48, "HS512": 64}
 
 
 def normalise_db_url(url: str) -> str:
+    """The URL with postgres:// or postgresql:// rewritten to postgresql+psycopg://."""
     # hosting providers hand out postgres:// URLs, which SQLAlchemy rejects,
     # and plain postgresql:// leaves the driver choice to SQLAlchemy. Only
     # psycopg 3 is installed
@@ -75,6 +82,7 @@ class Settings:
     """All backend configuration. Import the `settings` instance, not this class."""
 
     def __init__(self):
+        """Read every variable and check it. A bad value raises ValueError, which stops the API at startup."""
         self.database_url = normalise_db_url(env_str("DATABASE_URL", f"sqlite:///{local_path('jobfit.db')}"))
         self.chroma_path = local_path(env_str("CHROMA_PATH", "./chroma"))
         self.ollama_url = env_str("OLLAMA_URL", "http://localhost:11434").rstrip("/")
@@ -109,6 +117,7 @@ class Settings:
             raise ValueError(f"DATABASE_URL must be a sqlite:// or postgresql+psycopg:// URL, got {self.database_url!r}")
 
     def __repr__(self) -> str:
+        """Every setting, with the JWT secret and the database password hidden."""
         shown = dict(vars(self), jwt_secret_key="<set>" if self.jwt_secret_key else "<random per start>")
         # the Postgres password sits in the URL
         if "@" in self.database_url:

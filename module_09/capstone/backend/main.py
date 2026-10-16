@@ -67,6 +67,7 @@ from schemas import (
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    """Create the tables before the API takes its first request."""
     # no migrations yet, create_all only adds missing tables
     database.init_db()
     yield
@@ -94,13 +95,16 @@ NO_MATCH_ANSWER = (
 
 
 def content_hash(text: str) -> str:
-    # whitespace and case only, so re-pasting the same posting is caught but an edited one isn't
+    """
+    SHA-256 of the text, lowercased and with whitespace collapsed. Only case
+    and whitespace, so re-pasting the same posting is caught but an edited one isn't.
+    """
     return hashlib.sha256(" ".join(text.lower().split()).encode()).hexdigest()
 
 
 def get_owned_job(job_id: int, user: User, db: Session) -> JobPosting:
+    """The user's posting, or a 404. Someone else's posting is a 404 too, so ids can't be probed."""
     job = db.get(JobPosting, job_id)
-    # someone else's posting is a 404 too, so ids can't be probed
     if job is None or job.user_id != user.id:
         raise HTTPException(status_code=404, detail="Job posting not found")
     return job
@@ -119,9 +123,11 @@ def try_index(job: JobPosting, db: Session) -> bool:
     return job.indexed
 
 
-# FastAPI's default 422 handler echoes the input back, and NaN or a lone
-# surrogate in it can't be written out as JSON
 def json_safe(value):
+    """
+    The value with NaN, infinities and lone surrogates made writable as JSON.
+    FastAPI's default 422 handler echoes the input back, and those couldn't be.
+    """
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if isinstance(value, str):
@@ -135,14 +141,18 @@ def json_safe(value):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(_request: Request, exc: RequestValidationError):
+    """A 422 listing each field and why it was rejected."""
     return JSONResponse(status_code=422, content={"detail": json_safe(jsonable_encoder(exc.errors()))})
 
 
-# Postgres stopped or restarting. Every route that touches the database was a
-# bare 500 with a traceback; it's a dependency being down, so 503 like Ollama
 @app.exception_handler(OperationalError)
 @app.exception_handler(InterfaceError)
 async def database_unavailable(_request: Request, exc: Exception):
+    """
+    A 503 "Database unavailable" while Postgres is stopped or restarting.
+    Every route that touches the database was a bare 500 with a traceback,
+    but it's a dependency being down, so it's a 503 like Ollama.
+    """
     rag_pipeline.log.warning("database unavailable: %s", str(exc).splitlines()[0])
     return JSONResponse(status_code=503, content={"detail": "Database unavailable"})
 
@@ -151,8 +161,13 @@ async def database_unavailable(_request: Request, exc: Exception):
 
 @app.get("/health", response_model=HealthResponse, responses={503: {"description": "The database is down."}})
 def health(response: Response):
-    # ok: everything up. degraded: logins and CRUD work but search or answers
-    # don't (Chroma broken, Ollama down, model not pulled yet). down: no database
+    """
+    Whether the database, ChromaDB and Ollama are up, and the model is pulled.
+
+    ok: everything is up. degraded: logins and postings work but search or
+    answers don't (ChromaDB broken, Ollama down, the model not pulled yet).
+    down: no database, the only status that comes with a 503.
+    """
     db_ok = database.ping()
     try:
         rag_pipeline.count_chunks()
@@ -185,6 +200,7 @@ def health(response: Response):
 @app.post("/auth/register", response_model=UserOut, status_code=201,
           responses={409: {"description": "Username already taken."}})
 def register(req: UserCreate, db: DbSession):
+    """Create an account. The username is stored lowercase, and one that's taken is a 409."""
     user = User(username=req.username, hashed_password=auth.hash_password(req.password))
     db.add(user)
     try:
@@ -198,6 +214,10 @@ def register(req: UserCreate, db: DbSession):
 
 @app.post("/auth/token", response_model=Token, responses={401: {"description": "Wrong username or password."}})
 def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession):
+    """
+    Log in with the form fields `username` and `password`, which is what
+    Swagger's Authorize button sends. Returns a bearer token for every other route.
+    """
     user = auth.authenticate(db, form.username, form.password)
     if user is None:
         raise HTTPException(
@@ -210,11 +230,13 @@ def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession):
 
 @app.get("/me", response_model=UserOut)
 def me(user: CurrentUser):
+    """The signed-in user."""
     return user
 
 
 @app.delete("/me", status_code=204)
 def delete_me(user: CurrentUser, db: DbSession):
+    """Delete the account, its postings and their chunks in ChromaDB."""
     user_id = user.id
     db.delete(user)
     db.commit()
@@ -231,6 +253,7 @@ def delete_me(user: CurrentUser, db: DbSession):
 @app.get("/jobs", response_model=list[JobSummary])
 def list_jobs(user: CurrentUser, db: DbSession, limit: Annotated[int, Query(ge=1, le=100)] = 50,
               offset: Annotated[int, Query(ge=0, le=MAX_ID)] = 0):
+    """The user's postings, newest first, without their text."""
     stmt = (select(JobPosting).where(JobPosting.user_id == user.id)
             .order_by(JobPosting.created_at.desc(), JobPosting.id.desc()).limit(limit).offset(offset))
     return db.scalars(stmt).all()
@@ -239,6 +262,10 @@ def list_jobs(user: CurrentUser, db: DbSession, limit: Annotated[int, Query(ge=1
 @app.post("/jobs", response_model=JobOut, status_code=201,
           responses={409: {"description": "This posting is already saved."}})
 def create_job(req: JobCreate, user: CurrentUser, db: DbSession):
+    """
+    Save a posting, then chunk and index it for search. If indexing fails the
+    posting is still saved, with `indexed` false until a reindex.
+    """
     job = JobPosting(user_id=user.id, content_hash=content_hash(req.text), **req.model_dump())
     db.add(job)
     try:
@@ -252,6 +279,7 @@ def create_job(req: JobCreate, user: CurrentUser, db: DbSession):
 
 @app.post("/jobs/samples", response_model=SamplesResult)
 def add_samples(user: CurrentUser, db: DbSession):
+    """Save and index the bundled sample postings, skipping any the user already has."""
     existing = set(db.scalars(select(JobPosting.content_hash).where(JobPosting.user_id == user.id)))
     added = skipped = 0
     for sample in rag_pipeline.load_samples():
@@ -276,8 +304,12 @@ def add_samples(user: CurrentUser, db: DbSession):
 
 @app.post("/jobs/reindex", response_model=ReindexResult)
 def reindex(user: CurrentUser, db: DbSession):
-    # rebuilds this user's chunks from the database one posting at a time. It
-    # used to delete everything first, so a question asked mid-reindex found nothing
+    """
+    Rebuild the user's chunks in ChromaDB from the database, one posting at a
+    time, then remove any left from deleted postings. Returns how many were
+    indexed and the ids of any that failed.
+    """
+    # it used to delete everything first, so a question asked mid-reindex found nothing
     jobs = db.scalars(select(JobPosting).where(JobPosting.user_id == user.id)).all()
     failed = [job.id for job in jobs if not try_index(job, db)]
     # then clears out orphans from postings deleted while Chroma was failing
@@ -290,12 +322,17 @@ def reindex(user: CurrentUser, db: DbSession):
 
 @app.get("/jobs/{job_id}", response_model=JobOut)
 def get_job(job_id: JobId, user: CurrentUser, db: DbSession):
+    """One of the user's postings, with its full text."""
     return get_owned_job(job_id, user, db)
 
 
 @app.patch("/jobs/{job_id}", response_model=JobOut, responses={409: {"description": "Same text as another saved posting."}})
 def update_job(job_id: JobId, req: JobUpdate, user: CurrentUser,
                db: DbSession):
+    """
+    Edit a posting. Fields left out keep their value. A change to the text,
+    title, company or location re-indexes it.
+    """
     job = get_owned_job(job_id, user, db)
     changes = req.model_dump(exclude_unset=True)
     for field, value in changes.items():
@@ -315,6 +352,7 @@ def update_job(job_id: JobId, req: JobUpdate, user: CurrentUser,
 
 @app.delete("/jobs/{job_id}", status_code=204)
 def delete_job(job_id: JobId, user: CurrentUser, db: DbSession):
+    """Delete a posting and its chunks in ChromaDB."""
     job = get_owned_job(job_id, user, db)
     db.delete(job)
     db.commit()

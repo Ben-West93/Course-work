@@ -34,6 +34,7 @@ if is_sqlite:
     # SQLite ignores ON DELETE CASCADE unless this is switched on per connection
     @event.listens_for(engine, "connect")
     def enable_foreign_keys(dbapi_connection, _record):
+        """Switch on foreign keys for each new SQLite connection."""
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
@@ -45,10 +46,11 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 
 class Base(DeclarativeBase):
-    pass
+    """Declarative base for the ORM models in models.py."""
 
 
 def get_db():
+    """A session for one request, closed once the response is sent."""
     db = SessionLocal()
     try:
         yield db
@@ -61,6 +63,7 @@ DbSession = Annotated[Session, Depends(get_db)]
 
 
 def init_db(attempts: int = 10, wait: float = 3.0):
+    """Create any missing tables, retrying while the database isn't accepting connections yet."""
     # models has to be imported for its tables to be on Base.metadata
     import models  # noqa: F401
 
@@ -78,6 +81,7 @@ def init_db(attempts: int = 10, wait: float = 3.0):
 
 
 def ping() -> bool:
+    """Whether the database answers a SELECT 1."""
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))

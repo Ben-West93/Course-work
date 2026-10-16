@@ -8,6 +8,7 @@ To run them against Postgres, see TEST_DATABASE_URL in conftest.py.
 """
 
 import os
+import time
 
 import jwt
 import pytest
@@ -90,3 +91,29 @@ def test_deleting_account_cascades(client):
     assert rag_pipeline.collection.get(where={"job_id": job["id"]})["ids"] == []
     # the token is still signed and unexpired, but the user is gone
     assert client.get("/me", headers=headers).status_code == 401
+
+
+def test_a_deleted_accounts_token_never_opens_the_next_account(client):
+    # SQLite gave the next account the deleted one's id, and the old token,
+    # still signed and unexpired, signed in as that new account
+    first = signup(client)
+    first_id = client.get("/me", headers=first).json()["id"]
+    assert client.delete("/me", headers=first).status_code == 204
+    second = signup(client)
+    assert client.get("/me", headers=second).json()["id"] != first_id
+    assert client.get("/me", headers=first).status_code == 401
+
+
+def test_token_issued_before_the_account_existed_is_401(client):
+    user_id = client.get("/me", headers=signup(client)).json()["id"]
+    exp = int(time.time()) + 300
+
+    def bearer(**claims) -> dict:
+        return {"Authorization": "Bearer " + jwt.encode(claims, auth.SECRET_KEY, algorithm=auth.ALGORITHM)}
+
+    # an old token for this id, as one looks after `docker-compose down -v` restarted the ids
+    assert client.get("/me", headers=bearer(sub=str(user_id), iat=1, exp=exp)).status_code == 401
+    # without iat there's nothing to check it against
+    assert client.get("/me", headers=bearer(sub=str(user_id), exp=exp)).status_code == 401
+    # the same claims issued now are accepted
+    assert client.get("/me", headers=bearer(sub=str(user_id), iat=int(time.time()), exp=exp)).status_code == 200

@@ -40,6 +40,7 @@ for key, default in [("token", None), ("username", None), ("chat", []), ("notice
 
 
 def logout():
+    """Forget the token, the username and the chat."""
     st.session_state.token = None
     st.session_state.username = None
     st.session_state.chat = []
@@ -86,6 +87,7 @@ def safe_markdown(text: str) -> str:
 # ── Sidebar ────────────────────────────────────────────────────────────────
 
 def sidebar(health: dict | None):
+    """The app's name, what /health reported and, once signed in, who and a sign-out button."""
     with st.sidebar:
         st.title("🧭 JobFit")
         if health is None:
@@ -106,6 +108,7 @@ def sidebar(health: dict | None):
 
 
 def login_page():
+    """The sign-in and create-account tabs."""
     st.title("JobFit")
     st.caption("Save the job postings you're applying to and ask questions about them.")
     if st.session_state.pop("expired", False):
@@ -139,6 +142,7 @@ def login_page():
 # ── Jobs ───────────────────────────────────────────────────────────────────
 
 def jobs_page():
+    """The saved postings with their Delete buttons, the samples and reindex buttons, and the form to add one."""
     st.header("Saved postings")
     if st.session_state.notice:
         kind, message = st.session_state.notice
@@ -159,7 +163,9 @@ def jobs_page():
         with st.container(border=True):
             left, right = st.columns([5, 1])
             left.markdown(f"**{plain(job['title'])}** · {plain(job['company'])}")
-            left.caption(" · ".join(filter(None, [job.get("location"), job["source"],
+            # st.caption renders Markdown too, and the location is the user's text
+            location = plain(job["location"]) if job.get("location") else None
+            left.caption(" · ".join(filter(None, [location, job["source"],
                                                   "indexed" if job["indexed"] else "not indexed"])))
             if right.button("Delete", key=f"del_{job['id']}"):
                 try:
@@ -238,6 +244,7 @@ def failure_hint(detail: str) -> str:
 
 
 def ask(question: str, job_ids: list[int]) -> dict:
+    """The assistant's reply to a question. A failed request is a warning or error reply, never an exception."""
     try:
         data = api_client.ask(question, st.session_state.token, job_ids)
     # the question is already in the chat, so the failure has to be a reply
@@ -256,6 +263,7 @@ def ask(question: str, job_ids: list[int]) -> dict:
 
 
 def render(msg: dict):
+    """Draw one chat message. An answer from the assistant also gets its confidence badge and sources."""
     with st.chat_message(msg["role"]):
         kind = msg.get("kind", "answer")
         if kind != "answer":
@@ -279,6 +287,7 @@ def render(msg: dict):
 
 
 def ask_page():
+    """The posting filter, the chat so far and the question box."""
     st.header("Ask about your postings")
     jobs = []
     try:

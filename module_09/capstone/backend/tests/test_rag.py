@@ -16,8 +16,20 @@ from main import NO_MATCH_ANSWER
 from tests.conftest import POSTING, signup
 
 
+def test_health_returns_200(client, monkeypatch):
+    # Ollama connected with the model pulled, the one service the suite has no real copy of
+    monkeypatch.setattr(rag_pipeline, "ollama_status", lambda: (True, True))
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+    assert r.json()["model_ready"] is True
+
+
 def test_health_degraded_without_ollama(client):
-    body = client.get("/health").json()
+    r = client.get("/health")
+    # still a 200: logins and postings work without Ollama, only a dead database is a 503
+    assert r.status_code == 200
+    body = r.json()
     assert body["database"] == "ok"
     assert body["chroma"] == "ok"
     assert body["ollama"] == "disconnected"

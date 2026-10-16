@@ -28,21 +28,24 @@ ASK_TIMEOUT = 150
 
 
 class ApiError(Exception):
+    """The API refused a request, or no usable reply came back. str() is the message to show."""
+
     def __init__(self, message: str, status_code: int | None = None):
+        """`status_code` is the reply's HTTP status, None when there was no usable reply."""
         super().__init__(message)
         self.status_code = status_code
 
 
 class ApiTimeout(ApiError):
-    pass
+    """An ApiError for a request that ran out of time."""
 
 
 class SessionExpired(Exception):
-    pass
+    """A request with a token got a 401: the login ran out, or the API restarted without JWT_SECRET_KEY."""
 
 
 def error_detail(r: requests.Response) -> str:
-    # app errors are {"detail": "..."}, 422s are a list of pydantic errors
+    """The message in an error reply. App errors are {"detail": "..."}, a 422 lists each field's error."""
     try:
         body = r.json()
     except ValueError:
@@ -103,35 +106,42 @@ def login(username: str, password: str) -> str:
 
 
 def register(username: str, password: str) -> dict:
+    """Create an account. Returns it, without the password."""
     return request("post", "/auth/register", json={"username": username, "password": password}, timeout=10)
 
 
 # ── Job postings ───────────────────────────────────────────────────────────
 
 def list_jobs(token: str, limit: int = 100) -> list[dict]:
+    """The user's newest postings, at most `limit` of them."""
     return request("get", "/jobs", token, params={"limit": limit})
 
 
 def create_job(token: str, posting: dict) -> dict:
+    """Save a posting. Returns it, with `indexed` saying whether search can find it yet."""
     # saving also chunks and embeds it, which takes a few seconds on CPU
     return request("post", "/jobs", token, timeout=60, json=posting)
 
 
 def delete_job(token: str, job_id: int) -> None:
+    """Delete a posting."""
     request("delete", f"/jobs/{job_id}", token)
 
 
 def add_samples(token: str) -> dict:
+    """Add the sample postings. Returns how many were added and how many skipped."""
     return request("post", "/jobs/samples", token, timeout=120)
 
 
 def reindex(token: str) -> dict:
+    """Rebuild the search index. Returns how many postings were indexed and the ids that failed."""
     return request("post", "/jobs/reindex", token, timeout=120)
 
 
 # ── Ask ────────────────────────────────────────────────────────────────────
 
 def ask(question: str, token: str, job_ids: list[int] | None = None) -> dict:
+    """Ask about the user's postings, or only the ones in job_ids. Returns the answer, confidence and sources."""
     body = {"question": question}
     if job_ids:
         body["job_ids"] = job_ids

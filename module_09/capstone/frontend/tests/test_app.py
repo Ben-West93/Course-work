@@ -219,6 +219,15 @@ def test_hostile_titles_are_shown_as_text(fake_api):
     assert any("not indexed" in c.value for c in at.caption)
 
 
+def test_hostile_locations_are_shown_as_text(fake_api):
+    # the location is under the title in st.caption, which renders Markdown as well
+    fake_api[("GET", "/jobs")] = Reply(200, [dict(JOB, location=HOSTILE_TITLE)])
+    at = jobs_page(app())
+    caption = next(c.value for c in at.caption if "evil" in c.value)
+    assert "\\!\\[x\\]" in caption and "\\$90k" in caption and "\\*Lead\\*" in caption
+    assert "http\\:⁠//" in caption
+
+
 def test_failed_save_keeps_the_form_and_success_clears_it(fake_api):
     state = {"status": 422}
 

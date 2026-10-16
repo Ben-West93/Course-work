@@ -459,7 +459,7 @@ uses the real model and services. Between them every stage has a check:
 |---|---|---|---|
 | Settings | `config.py` | `test_pipeline.py`: defaults, 11 bad values each fail with the variable's name, the secret's minimum length for each JWT algorithm, URL rewriting, secrets hidden from logs | |
 | Startup | `database.init_db` | `test_pipeline.py`: retries while Postgres isn't up, gives up after the last attempt | stage 1 |
-| Accounts and tokens | `auth.py` | `test_auth.py`, `test_edge_cases.py`: bounds, case, hashing, forged, expired, unsigned and out-of-range tokens, only the configured algorithm accepted | stage 2 |
+| Accounts and tokens | `auth.py` | `test_auth.py`, `test_edge_cases.py`: bounds, case, hashing, forged, expired, unsigned and out-of-range tokens, only the configured algorithm accepted, a deleted account's token never opening a new one, tokens from before the account existed | stage 2 |
 | Saving and validation | `schemas.py`, `main.create_job` | `test_crud.py`: create, list, get, edit, delete, samples, another user's postings; `test_edge_cases.py`: every limit, NUL bytes, zero-width text, links, unknown fields, duplicates | stage 3 |
 | Postgres rows | `models.py` | the whole suite, on SQLite by default and on Postgres with `TEST_DATABASE_URL` | stage 4 |
 | Chunking | `rag_pipeline.chunk_posting` | 200-seed fuzz (no text lost, nothing over 500), pathological inputs, headings | stage 5 |
@@ -472,7 +472,7 @@ uses the real model and services. Between them every stage has a check:
 | Response | `main.ask` | `test_rag.py`: an answer with its sources, no matching postings skips the model; `test_pipeline.py`: source `n` is excerpt `[n]`, titles come from Postgres | stage 8 |
 | Guards | `main.ask`, `get_owned_job` | user isolation, off-topic questions skip the model (even with a planted posting that shares their words), Postgres down gives 503 | stage 10, including planted instructions against the real model |
 | Delete and cascade | `main.delete_me` | the cascade on SQLite and Postgres | stage 11 |
-| UI | `frontend/app.py`, `frontend/api_client.py` | `frontend/tests/test_app.py`: question to rendered answer, filters, every failure as a chat reply or an error on the page (sign-in and every Jobs action with the API gone), escaping, links in answers as plain text, form kept on error; `test_api_client.py`: what each call sends, every network failure as an `ApiError` | stage 1 (reachable) |
+| UI | `frontend/app.py`, `frontend/api_client.py` | `frontend/tests/test_app.py`: question to rendered answer, filters, every failure as a chat reply or an error on the page (sign-in and every Jobs action with the API gone), escaping of titles, companies and locations, links in answers as plain text, form kept on error; `test_api_client.py`: what each call sends, every network failure as an `ApiError` | stage 1 (reachable) |
 | Compose wiring | `docker-compose.yml` | `docker build --target test ./backend` | stage 1 |
 
 ## Tests
@@ -483,10 +483,10 @@ The `cd backend` and `cd frontend` commands need the virtualenv from
 
 | What | Command | Count |
 |---|---|---|
-| Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 414 |
-| Backend, inside the image with no network | `docker build --target test ./backend` | 414 |
-| Backend against Postgres (stack up) | the three commands below | 414 |
-| Frontend (AppTest and the API client, fake API) | `cd frontend && pytest -q` | 100 |
+| Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 417 |
+| Backend, inside the image with no network | `docker build --target test ./backend` | 417 |
+| Backend against Postgres (stack up) | the three commands below | 417 |
+| Frontend (AppTest and the API client, fake API) | `cd frontend && pytest -q` | 101 |
 | Whole flow against the live stack | `docker-compose exec backend python walkthrough.py` | 42 checks |
 | Lint | `ruff check backend/ frontend/` | |
 

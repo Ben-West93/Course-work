@@ -68,14 +68,17 @@ tokens: list[str] = []
 
 
 def stage(n: int, title: str):
+    """Print a stage's heading."""
     print(f"\n── {n}. {title} " + "─" * max(0, 60 - len(title)))
 
 
 def show(label: str, value):
+    """Print one labelled value from the current stage."""
     print(f"   {label:<14} {value}")
 
 
 def check(description: str, ok: bool, detail: str = ""):
+    """Count and print one check as PASS or FAIL, with the detail on a failure. Returns ok."""
     global passed, failed
     if ok:
         passed += 1
@@ -87,17 +90,19 @@ def check(description: str, ok: bool, detail: str = ""):
 
 
 def indent(text: str, width: int = 90) -> str:
-    # long lines (the system prompt is one) are wrapped, not cut
+    """The text as a quoted block, wrapped at `width`. Long lines (the system prompt is one) are wrapped, not cut."""
     lines = [part for line in text.strip().splitlines() for part in (textwrap.wrap(line, width) or [""])]
     return "\n".join(f"      | {line}" for line in lines)
 
 
 def api(method: str, path: str, token: str | None = None, **kwargs) -> requests.Response:
+    """One request to the API, with the token if there is one."""
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     return requests.request(method, f"{API_URL}{path}", headers=headers, timeout=180, **kwargs)
 
 
 def new_user() -> tuple[str, str, str]:
+    """Register and log in a throwaway user. Returns its username, password and token."""
     username, password = f"walk_{uuid.uuid4().hex[:8]}", uuid.uuid4().hex
     api("post", "/auth/register", json={"username": username, "password": password}).raise_for_status()
     token = api("post", "/auth/token", data={"username": username, "password": password}).json()["access_token"]
@@ -106,6 +111,7 @@ def new_user() -> tuple[str, str, str]:
 
 
 def main(keep: bool) -> int:
+    """Run the stages in order. Returns 1 if one failed in a way the rest can't run past, otherwise 0."""
     # ── 1 ─────────────────────────────────────────────────────────────────
     stage(1, "Services")
     try:

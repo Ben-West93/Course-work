@@ -14,11 +14,21 @@ from database import Base
 
 
 def utcnow() -> datetime:
+    """Now in UTC, for the timestamp columns."""
     return datetime.now(UTC)
 
 
+# SQLite gives a new row the highest id again once that row is deleted, so a
+# deleted account's unexpired token named the next account to register.
+# AUTOINCREMENT stops that. Postgres ignores it, its ids are never reused
+NEVER_REUSE_IDS = {"sqlite_autoincrement": True}
+
+
 class User(Base):
+    """An account. Deleting it deletes its postings."""
+
     __tablename__ = "users"
+    __table_args__ = NEVER_REUSE_IDS
 
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
@@ -33,9 +43,11 @@ class User(Base):
 
 
 class JobPosting(Base):
+    """A saved posting. Its text is the source of truth, ChromaDB only indexes it."""
+
     __tablename__ = "job_postings"
     # the same posting text saved twice would put duplicate chunks in every answer
-    __table_args__ = (UniqueConstraint("user_id", "content_hash", name="uq_posting_user_hash"),)
+    __table_args__ = (UniqueConstraint("user_id", "content_hash", name="uq_posting_user_hash"), NEVER_REUSE_IDS)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -56,4 +68,5 @@ class JobPosting(Base):
 
     @property
     def indexed(self) -> bool:
+        """Whether its chunks are in ChromaDB, so search can find it."""
         return self.indexed_at is not None
