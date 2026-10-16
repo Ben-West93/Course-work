@@ -20,6 +20,7 @@ status report, with the measurements behind the retrieval settings, is in
 - [Screenshots](#screenshots)
 - [API endpoints](#api-endpoints)
 - [Tech stack](#tech-stack)
+- [Architecture](#architecture): the diagram
 - [Running without Docker](#running-without-docker)
 - [How a posting is saved](#how-a-posting-is-saved)
 - [How a question is answered](#how-a-question-is-answered)
@@ -31,8 +32,8 @@ status report, with the measurements behind the retrieval settings, is in
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Project layout](#project-layout)
-- [Design](#design), written before the code, starting with the
-  [architecture diagram](#architecture)
+- [Design](#design), written before the code: storage, database schema, API
+  schemas and Docker Compose
 
 ## Prerequisites
 
@@ -188,7 +189,8 @@ Request and response schemas, error codes and the planned endpoints are in
 
 ## Tech stack
 
-The exact versions are pinned in each `requirements.txt`.
+The versions are pinned in each `requirements.txt`, and everything those
+pull in, in `constraints.txt`.
 
 | Part | Technology |
 |---|---|
@@ -200,6 +202,61 @@ The exact versions are pinned in each `requirements.txt`.
 | Frontend | Streamlit 1.64, calling the API with requests |
 | Containers | Docker and Docker Compose: six services, two of them one-shot setup steps. Both images run as a non-root user and install the versions pinned in `constraints.txt` |
 | Tests and lint | pytest 9.1, FastAPI's TestClient, Streamlit's AppTest, ruff |
+
+## Architecture
+
+Six services on one Compose network. The browser only talks to Streamlit,
+Streamlit only to the API, and the API to Postgres and Ollama, with ChromaDB
+running inside it. Arrows are requests, plain lines join a service to its
+volume, and the dotted arrows are the generated password being read.
+
+```mermaid
+flowchart TB
+    browser(["Browser"])
+
+    subgraph compose["Compose network: jobfit_default"]
+        frontend["frontend<br/>Streamlit :8501"]
+        backend["backend<br/>FastAPI + uvicorn :8000<br/>embedded ChromaDB<br/>all-MiniLM-L6-v2 (ONNX)"]
+        postgres[("postgres<br/>PostgreSQL 17 :5432")]
+        ollama["ollama<br/>llama3.2:3b :11434"]
+        pull["ollama-pull<br/>one-shot pull + warm-up"]
+        secret["postgres-secret<br/>one-shot password"]
+    end
+
+    subgraph volumes["Docker named volumes"]
+        pgvol[("postgres_data")]
+        chromavol[("chroma_data")]
+        ollamavol[("ollama_data")]
+        secretvol[("db_secret")]
+    end
+
+    browser -- "HTTP 127.0.0.1:8501" --> frontend
+    frontend -- "HTTP + Bearer JWT<br/>backend:8000" --> backend
+    backend -- "SQL over TCP (psycopg 3)<br/>postgres:5432" --> postgres
+    backend -- "HTTP /api/chat, /api/tags<br/>ollama:11434" --> ollama
+    pull -- "HTTP pull + warm-up" --> ollama
+    postgres --- pgvol
+    backend --- chromavol
+    ollama --- ollamavol
+    secret -- "writes it once" --> secretvol
+    secretvol -. "read-only" .-> postgres
+    secretvol -. "read-only" .-> backend
+```
+
+**Communication.** Services talk over the default compose network by service
+name (`backend`, `postgres`, `ollama`). Inside a container `localhost` is that
+container, so `http://localhost:8000` from the frontend container is refused.
+Streamlit calls the API from its own Python process, through
+`frontend/api_client.py`, so the JWT stays server-side and never reaches the
+browser. The only volume two services share is `db_secret`, which postgres
+and the backend mount read-only to get the generated password. Each of the
+others belongs to one service.
+
+The step-by-step flows are in [How a posting is saved](#how-a-posting-is-saved)
+and [How a question is answered](#how-a-question-is-answered).
+
+The storage behind it, the database schema and every Compose service are in
+[Design](#design).
 
 ## Running without Docker
 
@@ -777,54 +834,10 @@ capstone/
 This section was written on Day 2, before any code. It's been updated where
 the build differs. *Planned* marks what isn't built yet.
 
-### Architecture
+### Storage
 
-```mermaid
-flowchart TB
-    browser(["Browser"])
-
-    subgraph compose["Compose network: jobfit_default"]
-        frontend["frontend<br/>Streamlit :8501"]
-        backend["backend<br/>FastAPI + uvicorn :8000<br/>embedded ChromaDB<br/>all-MiniLM-L6-v2 (ONNX)"]
-        postgres[("postgres<br/>PostgreSQL 17 :5432")]
-        ollama["ollama<br/>llama3.2:3b :11434"]
-        pull["ollama-pull<br/>one-shot pull + warm-up"]
-        secret["postgres-secret<br/>one-shot password"]
-    end
-
-    subgraph volumes["Docker named volumes"]
-        pgvol[("postgres_data")]
-        chromavol[("chroma_data")]
-        ollamavol[("ollama_data")]
-        secretvol[("db_secret")]
-    end
-
-    browser -- "HTTP 127.0.0.1:8501" --> frontend
-    frontend -- "HTTP + Bearer JWT<br/>backend:8000" --> backend
-    backend -- "SQL over TCP (psycopg 3)<br/>postgres:5432" --> postgres
-    backend -- "HTTP /api/chat, /api/tags<br/>ollama:11434" --> ollama
-    pull -- "HTTP pull + warm-up" --> ollama
-    postgres --- pgvol
-    backend --- chromavol
-    ollama --- ollamavol
-    secret -- "writes it once" --> secretvol
-    secretvol -. "read-only" .-> postgres
-    secretvol -. "read-only" .-> backend
-```
-
-**Communication.** Services talk over the default compose network by service
-name (`backend`, `postgres`, `ollama`). Inside a container `localhost` is that
-container, so `http://localhost:8000` from the frontend container is refused.
-Streamlit calls the API from its own Python process, through
-`frontend/api_client.py`, so the JWT stays server-side and never reaches the
-browser. The only volume two services share is `db_secret`, which postgres
-and the backend mount read-only to get the generated password. Each of the
-others belongs to one service.
-
-The step-by-step flows are in [How a posting is saved](#how-a-posting-is-saved)
-and [How a question is answered](#how-a-question-is-answered).
-
-**Storage.**
+The architecture diagram is near the top, in
+[Architecture](#architecture).
 
 | Store | Holds | Volume |
 |---|---|---|
