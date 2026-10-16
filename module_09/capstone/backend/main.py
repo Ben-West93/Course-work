@@ -12,8 +12,10 @@ steps (chunk, index, search, prompt, generate, score) in rag_pipeline.py. The RE
 walkthrough.py runs it against the live services.
 
 Status codes every route can return: 401 bad or missing token, 404 not found
-(or not yours), 409 duplicate, 422 invalid input, 503 a service the API needs
-(Postgres, ChromaDB, Ollama) is down. A 500 is a bug.
+(or not yours, or deleted by another request while this one ran), 409
+duplicate, 413 a body over 1 MB, 422 invalid input, 429 too many failed
+sign-ins, 503 a service the API needs (Postgres, ChromaDB, Ollama) is down.
+A 500 is a bug.
 """
 
 import hashlib
@@ -36,9 +38,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.exc import IntegrityError, InterfaceError, OperationalError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
 import auth
 import database
@@ -110,16 +113,40 @@ def get_owned_job(job_id: int, user: User, db: Session) -> JobPosting:
     return job
 
 
-def try_index(job: JobPosting, db: Session) -> bool:
-    """Index the posting and stamp indexed_at. A Chroma failure leaves it saved but unindexed."""
+# another request deleted the row this one was saving: a posting deleted while
+# it was edited or reindexed, or the whole account deleted mid-request. Every
+# route that ran into one was a 500
+DELETED_MEANWHILE = (StaleDataError, ObjectDeletedError)
+
+
+def try_index(job: JobPosting, db: Session) -> bool | None:
+    """
+    Index the posting and stamp indexed_at. True if search can find it, False
+    if ChromaDB failed (it stays saved and a reindex fixes it), None if another
+    request deleted it in the meantime.
+    """
+    # from the session's identity map, so it's there even once the row is gone
+    job_id = inspect(job).identity[0]
     try:
-        rag_pipeline.index_posting(job)
-    except Exception as e:  # noqa: BLE001 - Postgres is the source of truth, reindex fixes it later
-        rag_pipeline.log.warning("indexing job %s failed: %r", job.id, e)
-        job.indexed_at = None
-    else:
-        job.indexed_at = datetime.now(UTC)
-    db.commit()
+        try:
+            rag_pipeline.index_posting(job)
+        except DELETED_MEANWHILE:
+            raise
+        except Exception as e:  # noqa: BLE001 - Postgres is the source of truth, reindex fixes it later
+            rag_pipeline.log.warning("indexing job %s failed: %r", job_id, e)
+            job.indexed_at = None
+        else:
+            job.indexed_at = datetime.now(UTC)
+        db.commit()
+    except DELETED_MEANWHILE:
+        # the chunks just stored belong to a posting that's gone, so they go too
+        db.rollback()
+        rag_pipeline.log.info("job %s was deleted while it was being indexed", job_id)
+        try:
+            rag_pipeline.delete_posting(job_id)
+        except Exception as e:  # noqa: BLE001 - orphans are filtered out of /ask anyway
+            rag_pipeline.log.warning("removing chunks for job %s failed: %r", job_id, e)
+        return None
     return job.indexed
 
 
@@ -155,6 +182,35 @@ async def database_unavailable(_request: Request, exc: Exception):
     """
     rag_pipeline.log.warning("database unavailable: %s", str(exc).splitlines()[0])
     return JSONResponse(status_code=503, content={"detail": "Database unavailable"})
+
+
+@app.exception_handler(StaleDataError)
+@app.exception_handler(ObjectDeletedError)
+async def deleted_meanwhile(_request: Request, exc: Exception):
+    """
+    A 404 for a row another request deleted while this one was using it. The
+    routes that can race a delete handle it themselves, this catches anything
+    else that does instead of a 500.
+    """
+    rag_pipeline.log.warning("row deleted during the request: %s", str(exc).splitlines()[0])
+    return JSONResponse(status_code=404, content={"detail": "Not found: it was deleted while this request was running"})
+
+
+# the biggest real request, a 20,000-character posting, is under 250 KB even
+# when every character is escaped. A 30 MB one was read and parsed in full
+# before validation turned it down, so anything over this is refused before
+# its body is read. Only Content-Length is checked, which requests, the UI
+# and Swagger always send
+MAX_BODY_BYTES = 1_000_000
+
+
+@app.middleware("http")
+async def limit_body_size(request: Request, call_next):
+    """A 413 for a request whose body is over MAX_BODY_BYTES, without reading it."""
+    length = request.headers.get("content-length", "")
+    if length.isdigit() and int(length) > MAX_BODY_BYTES:
+        return JSONResponse(status_code=413, content={"detail": "Request body is over 1 MB"})
+    return await call_next(request)
 
 
 # ── Health ─────────────────────────────────────────────────────────────────
@@ -223,9 +279,10 @@ def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession):
     After 5 wrong passwords for a username in 15 minutes it's a 429 until the
     oldest of them is 15 minutes old, even with the right password.
     """
-    # checked before the password, otherwise the right one would still get in
-    # and the block would only slow the guessing down
-    retry_after = auth.login_retry_after(form.username)
+    # counted before the password is checked, so guesses sent at once can't
+    # all get in first. The right password is refused too while it's blocked,
+    # otherwise the block would only slow the guessing down
+    retry_after = auth.start_login_attempt(form.username)
     if retry_after:
         minutes = math.ceil(retry_after / 60)
         raise HTTPException(
@@ -236,7 +293,7 @@ def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession):
         )
     user = auth.authenticate(db, form.username, form.password)
     if user is None:
-        auth.record_failed_login(form.username)
+        # the attempt was already counted, and stays counted
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -284,37 +341,53 @@ def create_job(req: JobCreate, user: CurrentUser, db: DbSession):
     Save a posting, then chunk and index it for search. If indexing fails the
     posting is still saved, with `indexed` false until a reindex.
     """
-    job = JobPosting(user_id=user.id, content_hash=content_hash(req.text), **req.model_dump())
+    user_id = user.id
+    job = JobPosting(user_id=user_id, content_hash=content_hash(req.text), **req.model_dump())
     db.add(job)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
+        # the foreign key, not a duplicate: the account was deleted while this
+        # request ran. It said "You've already saved this posting"
+        if db.get(User, user_id) is None:
+            raise auth.CREDENTIALS_ERROR from None
         raise HTTPException(status_code=409, detail="You've already saved this posting") from None
-    try_index(job, db)
+    if try_index(job, db) is None:
+        # deleted straight after it was saved, usually with the whole account
+        if db.get(User, user_id) is None:
+            raise auth.CREDENTIALS_ERROR
+        raise HTTPException(status_code=404, detail="Job posting not found")
     return job
 
 
 @app.post("/jobs/samples", response_model=SamplesResult)
 def add_samples(user: CurrentUser, db: DbSession):
     """Save and index the bundled sample postings, skipping any the user already has."""
-    existing = set(db.scalars(select(JobPosting.content_hash).where(JobPosting.user_id == user.id)))
+    # read once: after a rollback, user.id would reload a row that may be gone
+    user_id = user.id
+    existing = set(db.scalars(select(JobPosting.content_hash).where(JobPosting.user_id == user_id)))
     added = skipped = 0
     for sample in rag_pipeline.load_samples():
         digest = content_hash(sample["text"])
         if digest in existing:
             skipped += 1
             continue
-        job = JobPosting(user_id=user.id, source="sample", content_hash=digest, **sample)
+        job = JobPosting(user_id=user_id, source="sample", content_hash=digest, **sample)
         db.add(job)
         try:
             db.commit()
         except IntegrityError:
-            # a second request (a double click) saved it first. Was a 500
             db.rollback()
+            # the account was deleted part-way through. Was a 500
+            if db.get(User, user_id) is None:
+                raise auth.CREDENTIALS_ERROR from None
+            # a second request (a double click) saved it first. Was a 500
             skipped += 1
             continue
-        try_index(job, db)
+        if try_index(job, db) is None:
+            skipped += 1
+            continue
         existing.add(digest)
         added += 1
     return SamplesResult(added=added, skipped=skipped)
@@ -328,14 +401,19 @@ def reindex(user: CurrentUser, db: DbSession):
     indexed and the ids of any that failed.
     """
     # it used to delete everything first, so a question asked mid-reindex found nothing
-    jobs = db.scalars(select(JobPosting).where(JobPosting.user_id == user.id)).all()
-    failed = [job.id for job in jobs if not try_index(job, db)]
+    user_id = user.id
+    jobs = db.scalars(select(JobPosting).where(JobPosting.user_id == user_id)).all()
+    # ids read up front: one posting found deleted rolls back, which expires the rest
+    results = {job_id: try_index(job, db) for job_id, job in zip([job.id for job in jobs], jobs)}
+    # a posting deleted part-way through (None) is neither indexed nor failed. Was a 500
+    failed = [job_id for job_id, ok in results.items() if ok is False]
+    still_saved = [job_id for job_id, ok in results.items() if ok is not None]
     # then clears out orphans from postings deleted while Chroma was failing
     try:
-        rag_pipeline.delete_orphans(user.id, [job.id for job in jobs])
+        rag_pipeline.delete_orphans(user_id, still_saved)
     except Exception as e:  # noqa: BLE001 - orphans are filtered out of /ask anyway
-        rag_pipeline.log.warning("removing orphan chunks for user %s failed: %r", user.id, e)
-    return ReindexResult(indexed=len(jobs) - len(failed), failed=failed)
+        rag_pipeline.log.warning("removing orphan chunks for user %s failed: %r", user_id, e)
+    return ReindexResult(indexed=len(still_saved) - len(failed), failed=failed)
 
 
 @app.get("/jobs/{job_id}", response_model=JobOut)
@@ -362,9 +440,13 @@ def update_job(job_id: JobId, req: JobUpdate, user: CurrentUser,
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Another saved posting has the same text") from None
+    except DELETED_MEANWHILE:
+        # deleted by another request after this one loaded it. Was a 500
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Job posting not found") from None
     # title, company and location are in every chunk's header, so they reindex too
-    if changes.keys() & {"text", "title", "company", "location"}:
-        try_index(job, db)
+    if changes.keys() & {"text", "title", "company", "location"} and try_index(job, db) is None:
+        raise HTTPException(status_code=404, detail="Job posting not found")
     return job
 
 

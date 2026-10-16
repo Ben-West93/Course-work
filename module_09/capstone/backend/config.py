@@ -93,6 +93,8 @@ def with_password_file(url: str, name: str, path: str) -> str:
             password = f.read().strip()
     except OSError as e:
         raise ValueError(f"{name} is {path!r}, which can't be read ({e.strerror})") from None
+    except UnicodeDecodeError:
+        raise ValueError(f"{name} is {path!r}, which isn't UTF-8 text") from None
     if not password:
         raise ValueError(f"{name} is {path!r}, which is empty")
     return make_url(url).set(password=password).render_as_string(hide_password=False)

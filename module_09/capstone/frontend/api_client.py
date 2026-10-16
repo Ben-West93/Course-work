@@ -126,10 +126,17 @@ def register(username: str, password: str) -> dict:
 
 def list_jobs(token: str) -> list[dict]:
     """The user's postings, newest first, fetched PAGE_SIZE at a time up to MAX_POSTINGS."""
-    jobs = []
-    while len(jobs) < MAX_POSTINGS:
-        page = request("get", "/jobs", token, params={"limit": PAGE_SIZE, "offset": len(jobs)})
-        jobs.extend(page)
+    jobs, seen, offset = [], set(), 0
+    while offset < MAX_POSTINGS:
+        page = request("get", "/jobs", token, params={"limit": PAGE_SIZE, "offset": offset})
+        offset += len(page)
+        # a posting saved in another tab between two pages pushes one already
+        # listed onto the next page too. Twice on the Jobs page, its Delete
+        # button's key clashed and the whole page failed
+        for job in page:
+            if job["id"] not in seen:
+                seen.add(job["id"])
+                jobs.append(job)
         if len(page) < PAGE_SIZE:
             break
     return jobs[:MAX_POSTINGS]

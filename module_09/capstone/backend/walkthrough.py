@@ -126,10 +126,18 @@ def main(keep: bool) -> int:
     if not check(f"Ollama has {health['model']} ready", health["ollama"] == "connected" and health["model_ready"], hint):
         return 1
     if IN_DOCKER:
-        try:
-            ui = requests.get(f"{FRONTEND_URL}/_stcore/health", timeout=5).text
-        except requests.exceptions.RequestException as e:
-            ui = type(e).__name__
+        # the frontend only starts once the backend is healthy, and Streamlit
+        # takes a moment more. On a restart with the model already pulled it
+        # answered a second after ollama-pull exited, so this waits up to 15s
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                ui = requests.get(f"{FRONTEND_URL}/_stcore/health", timeout=5).text
+            except requests.exceptions.RequestException as e:
+                ui = type(e).__name__
+            if ui == "ok" or time.monotonic() > deadline:
+                break
+            time.sleep(1)
         show("frontend", f"{FRONTEND_URL}/_stcore/health -> {ui!r}")
         check("Streamlit is up and reachable by service name", ui == "ok")
 

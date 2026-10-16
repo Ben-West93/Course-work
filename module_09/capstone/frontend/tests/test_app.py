@@ -268,6 +268,18 @@ def test_postings_past_the_first_hundred_are_listed(fake_api):
     assert not any("newest" in c.value for c in at.caption)
 
 
+def test_a_posting_repeated_across_pages_is_shown_once(fake_api):
+    # two Delete buttons with one key made the whole Jobs page fail
+    def route(params, **_kw):
+        start = 0 if params["offset"] == 0 else 99
+        return Reply(200, [dict(JOB, id=i) for i in range(start, 100 if start == 0 else 130)])
+
+    fake_api[("GET", "/jobs")] = route
+    at = jobs_page(app())
+    assert not at.exception
+    assert sum(b.label == "Yes, delete" for b in at.button) == 130
+
+
 def test_posting_cap_is_shown(fake_api, monkeypatch):
     monkeypatch.setattr(api_client, "MAX_POSTINGS", 150)
     fake_api[("GET", "/jobs")] = lambda params, **_kw: Reply(200, [dict(JOB, id=params["offset"] + i) for i in range(100)])

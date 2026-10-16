@@ -22,6 +22,10 @@ def utcnow() -> datetime:
 # deleted account's unexpired token named the next account to register.
 # AUTOINCREMENT stops that. Postgres ignores it, its ids are never reused
 NEVER_REUSE_IDS = {"sqlite_autoincrement": True}
+# two deletes of one row at once (a double click, two tabs) both answer 204,
+# and the second finds nothing left to delete. That's expected, not worth the
+# SAWarning SQLAlchemy logs for it
+DELETE_MAY_FIND_NOTHING = {"confirm_deleted_rows": False}
 
 
 class User(Base):
@@ -29,6 +33,7 @@ class User(Base):
 
     __tablename__ = "users"
     __table_args__ = NEVER_REUSE_IDS
+    __mapper_args__ = DELETE_MAY_FIND_NOTHING
 
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
@@ -48,6 +53,7 @@ class JobPosting(Base):
     __tablename__ = "job_postings"
     # the same posting text saved twice would put duplicate chunks in every answer
     __table_args__ = (UniqueConstraint("user_id", "content_hash", name="uq_posting_user_hash"), NEVER_REUSE_IDS)
+    __mapper_args__ = DELETE_MAY_FIND_NOTHING
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)

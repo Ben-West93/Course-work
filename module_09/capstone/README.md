@@ -111,8 +111,8 @@ downloaded model.
    block it until the oldest of them is 15 minutes old.
 2. **Save postings** on the Jobs page.
    - *Load sample postings* adds 8 made-up junior AI and backend postings.
-   - To add your own, paste the text or upload a `.txt` or `.md` file. It
-     needs 200 to 20,000 characters.
+   - To add your own, paste the text or upload a `.txt` or `.md` file of up
+     to 1 MB. It needs 200 to 20,000 characters.
    - Title and company are required. Fill in the location too: it's the only
      place the location is searched.
    - Saving the same text twice is rejected.
@@ -227,7 +227,7 @@ cd backend && uvicorn main:app --reload --port 8000
 In a second terminal:
 
 ```bash
-cd frontend && BACKEND_URL=http://localhost:8000 streamlit run app.py
+cd frontend && BACKEND_URL=http://localhost:8000 streamlit run app.py --server.maxUploadSize 1
 ```
 
 ## How a posting is saved
@@ -397,6 +397,14 @@ Why the main settings are what they are. The measurements behind them are in
   shown as literal text.
 - **Every search is filtered by user**, and another user's posting is a 404,
   the same as one that doesn't exist.
+- **A request that races a delete ends in a 404 or a 401, never a 500.** An
+  edit, a reindex, a save or a sample load that loses to a delete of the same
+  posting (or of the whole account) used to fail with `StaleDataError` or
+  `ObjectDeletedError`. Chunks indexed for a posting that's gone are removed
+  on the spot.
+- **Request bodies over 1 MB are refused** with a 413 before they're read, and
+  uploads in the UI stop at 1 MB. The largest valid posting is about 240 KB
+  even fully escaped, and a 30 MB one used to be parsed in full first.
 
 ## Known limitations and future improvements
 
@@ -420,6 +428,10 @@ Known limitations:
   all got a 200, but the last one waited 23s.
 - **One API process.** Embedded ChromaDB and the in-memory sign-in throttle
   both rely on a single uvicorn worker, and a restart clears the throttle.
+- **Anyone who knows a username can keep it locked.** The sign-in throttle
+  counts per username, because everything through the UI comes from one
+  address, so 5 wrong guesses every 15 minutes keep that account's owner out
+  as well. Restarting the backend clears it.
 - **A token can't be revoked.** Signing out forgets it in the UI, but it
   stays valid until it expires (30 minutes). There's no password change or
   reset, and without `JWT_SECRET_KEY` a restart signs everyone out.
@@ -601,9 +613,9 @@ uses the real model and services. Between them every stage has a check:
 
 | Stage | Code | pytest (backend unless noted) | Live, in `walkthrough.py` |
 |---|---|---|---|
-| Settings | `config.py` | `test_pipeline.py`: defaults, 11 bad values each fail with the variable's name, the secret's minimum length for each JWT algorithm, URL rewriting, secrets hidden from logs, the database password read from its file | |
+| Settings | `config.py` | `test_pipeline.py`: defaults, 11 bad values each fail with the variable's name, the secret's minimum length for each JWT algorithm, URL rewriting, secrets hidden from logs, the database password read from its file, and a clear error for one that's missing, empty or not text | |
 | Startup | `database.init_db` | `test_pipeline.py`: retries while Postgres isn't up, gives up after the last attempt | stage 1 |
-| Accounts and tokens | `auth.py` | `test_auth.py`, `test_edge_cases.py`: bounds, case, hashing, forged, expired, unsigned and out-of-range tokens, only the configured algorithm accepted, a deleted account's token never opening a new one, tokens from before the account existed; 5 wrong passwords block a username (unknown ones too, the right password included) until the window passes | stage 2 |
+| Accounts and tokens | `auth.py` | `test_auth.py`, `test_edge_cases.py`: bounds, case, hashing, forged, expired, unsigned and out-of-range tokens, only the configured algorithm accepted, a deleted account's token never opening a new one, tokens from before the account existed; 5 wrong passwords block a username (unknown ones too, the right password included) until the window passes, and 20 guesses sent at once still get only 5 tries | stage 2 |
 | Saving and validation | `schemas.py`, `main.create_job` | `test_crud.py`: create, list, get, edit, delete, samples, another user's postings; `test_edge_cases.py`: every limit, NUL bytes, zero-width text, links, unknown fields, duplicates | stage 3 |
 | Postgres rows | `models.py` | the whole suite, on SQLite by default and on Postgres with `TEST_DATABASE_URL` | stage 4 |
 | Chunking | `rag_pipeline.chunk_posting` | 200-seed fuzz (no text lost, nothing over 500), pathological inputs, headings | stage 5 |
@@ -615,8 +627,9 @@ uses the real model and services. Between them every stage has a check:
 | Citations and confidence | `rag_pipeline.compute_confidence` | the scoring rules | stage 8 |
 | Response | `main.ask` | `test_rag.py`: an answer with its sources, no matching postings skips the model; `test_pipeline.py`: source `n` is excerpt `[n]`, titles come from Postgres | stage 8 |
 | Guards | `main.ask`, `get_owned_job` | user isolation, off-topic questions skip the model (even with a planted posting that shares their words), Postgres down gives 503 | stage 10, including planted instructions against the real model |
+| Races with a delete | `main.try_index`, `main.update_job`, `main.create_job`, `main.add_samples`, `main.reindex` | `test_edge_cases.py`: an edit, a reindex, a new posting and a sample load each losing to a delete, two deletes at once, any other deleted row as a 404, the 1 MB body limit. They pass on SQLite and Postgres, and fail on the code before the fix. On the live stack, these same races with requests sent at once gave 500s, and now give 404 or 401 | |
 | Delete and cascade | `main.delete_me` | the cascade on SQLite and Postgres | stage 11 |
-| UI | `frontend/app.py`, `frontend/api_client.py` | `frontend/tests/test_app.py`: question to rendered answer, filters, every failure as a chat reply or an error on the page (sign-in and every Jobs action with the API gone), escaping of titles, companies and locations, links in answers as plain text, form kept on error, Delete asking first, postings past the first 100; `test_api_client.py`: what each call sends, paging through `/jobs`, the `/ask` timeout following `OLLAMA_TIMEOUT`, every network failure as an `ApiError` | stage 1 (reachable) |
+| UI | `frontend/app.py`, `frontend/api_client.py` | `frontend/tests/test_app.py`: question to rendered answer, filters, every failure as a chat reply or an error on the page (sign-in and every Jobs action with the API gone), escaping of titles, companies and locations, links in answers as plain text, form kept on error, Delete asking first, postings past the first 100, a posting repeated across pages shown once; `test_api_client.py`: what each call sends, paging through `/jobs`, the `/ask` timeout following `OLLAMA_TIMEOUT`, every network failure as an `ApiError` | stage 1 (reachable) |
 | Compose wiring | `docker-compose.yml` | `docker build --target test ./backend` | stage 1 |
 
 ## Tests
@@ -627,10 +640,10 @@ The `cd backend` and `cd frontend` commands need the virtualenv from
 
 | What | Command | Count |
 |---|---|---|
-| Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 425 |
-| Backend, inside the image with no network | `docker build --target test ./backend` | 425 |
-| Backend against Postgres (stack up) | the three commands below | 425 |
-| Frontend (AppTest and the API client, fake API) | `cd frontend && pytest -q` | 110 |
+| Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 438 |
+| Backend, inside the image with no network | `docker build --target test ./backend` | 438 |
+| Backend against Postgres (stack up) | the three commands below | 438 |
+| Frontend (AppTest and the API client, fake API) | `cd frontend && pytest -q` | 112 |
 | Whole flow against the live stack | `docker-compose exec backend python walkthrough.py` | 42 checks |
 | Lint | `ruff check backend/ frontend/` | |
 
@@ -704,6 +717,7 @@ containers itself, and those override `.env`.
 | "Ollama timed out" | the first answer after a while loads the model | ask again, or raise `OLLAMA_TIMEOUT` |
 | "Database unavailable" (503) | Postgres is stopped or restarting | `docker-compose ps postgres`. The API reconnects by itself |
 | Logged out after the backend restarted | no `JWT_SECRET_KEY`, so a new random one was made | set `JWT_SECRET_KEY` in `.env` |
+| `docker-compose up` stops with `dependency failed to start: container jobfit-backend-1 is unhealthy` | the backend can't start, so the frontend, which waits for it, isn't started either | `docker-compose logs backend` says why, usually a bad value in `.env` (see the rows below). Fix it, then `docker-compose up -d` |
 | Backend keeps restarting, log says `JWT_SECRET_KEY must be at least 32 bytes` | the secret in `.env` is too short | generate one: `python -c "import secrets; print(secrets.token_urlsafe(32))"` |
 | `docker-compose up`: port is already allocated | something else is on 8000, 8501 or 11435 (another course stack?) | `docker ps`, stop it, or change the port |
 | A posting shows *not indexed* | ChromaDB failed when it was saved | Jobs page, *Rebuild search index* |
@@ -885,9 +899,10 @@ Errors are always `{"detail": ...}`:
 
 | Code | Meaning |
 |---|---|
-| 401 | missing, invalid or expired token, or wrong password |
-| 404 | not found, or not yours |
+| 401 | missing, invalid or expired token, or wrong password. Also a save that raced the account being deleted |
+| 404 | not found, or not yours, or deleted by another request while this one ran |
 | 409 | username taken, or the same posting text saved twice |
+| 413 | the request body is over 1 MB |
 | 422 | invalid input. `detail` lists each field and why |
 | 429 | 5 wrong passwords for this username in the last 15 minutes. `Retry-After` says how many seconds are left |
 | 503 | the API is fine but a service it needs is down: `Database unavailable`, `Ollama unavailable`, `Ollama timed out`, `Ollama returned 404 for model …`, `ChromaDB search failed` |
@@ -924,7 +939,7 @@ folder name.
 | `ollama` | `ollama/ollama:0.40.5` | 127.0.0.1:11435 | `ollama_data` | `ollama list` | 11435 so it can't clash with a host Ollama |
 | `ollama-pull` | `ollama/ollama:0.40.5` | none | none | none | one-shot: pulls `MODEL_NAME`, loads it once, exits 0 |
 | `backend` | `./backend` (python:3.11-slim, multi-stage) | 127.0.0.1:8000 | `chroma_data`, `db_secret` (read-only) | `GET /health` | waits for postgres to be healthy, and for ollama only if it can. Runs as `app` |
-| `frontend` | `./frontend` (python:3.11-slim) | 127.0.0.1:8501 | none | none | waits for the backend to be healthy. `BACKEND_URL=http://backend:8000`, and `OLLAMA_TIMEOUT` from `.env`. Runs as `app` |
+| `frontend` | `./frontend` (python:3.11-slim) | 127.0.0.1:8501 | none | none | waits for the backend to be healthy. `BACKEND_URL=http://backend:8000`, and `OLLAMA_TIMEOUT` from `.env`. Uploads stop at 1 MB. Runs as `app` |
 
 Every service except the one-shot `postgres-secret` and `ollama-pull` has
 `restart: unless-stopped`. Ports are

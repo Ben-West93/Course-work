@@ -7,19 +7,22 @@ Every test here started as a probe against the running stack. The ones marked
 """
 
 import random
+import warnings
 from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
 import requests
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, SAWarning
+from sqlalchemy.orm.exc import StaleDataError
 
 import auth
 import database
+import main
 import rag_pipeline
 from database import SessionLocal, get_db
 from main import app, content_hash
-from models import JobPosting
+from models import JobPosting, User
 from schemas import MAX_ID
 from tests.conftest import signup
 
@@ -346,6 +349,150 @@ def test_samples_race_is_skipped_not_500(client, monkeypatch):
 def test_missing_seed_folder_adds_nothing(client, headers, monkeypatch):
     monkeypatch.setattr(rag_pipeline, "SEED_DIR", "/nonexistent/seed/jobs")
     assert client.post("/jobs/samples", headers=headers).json() == {"added": 0, "skipped": 0}
+
+
+# ── Requests racing a delete (were 500s) ───────────────────────────────────
+#
+# Each of these lost a race on the live stack: two requests sent at the same
+# instant, one deleting what the other was saving. Here the delete happens in
+# a second session at exactly the moment it did there, so it's deterministic.
+
+def delete_elsewhere(model, row_id: int):
+    """Delete a row from another session, as a second request would."""
+    with SessionLocal() as other:
+        other.delete(other.get(model, row_id))
+        other.commit()
+
+
+def deleted_once_loaded(monkeypatch):
+    """The route loads the posting as usual, then another request deletes it."""
+    load = main.get_owned_job
+
+    def loaded_then_deleted(job_id, user, db):
+        found = load(job_id, user, db)
+        delete_elsewhere(JobPosting, job_id)
+        return found
+
+    monkeypatch.setattr(main, "get_owned_job", loaded_then_deleted)
+
+
+def test_an_edit_that_loses_to_a_delete_is_404(client, headers, job, monkeypatch):
+    # the delete lands after the edit has loaded the posting, before it saves
+    deleted_once_loaded(monkeypatch)
+    r = client.patch(f"/jobs/{job['id']}", headers=headers, json={"title": "Edited"})
+    assert (r.status_code, r.json()["detail"]) == (404, "Job posting not found")
+
+
+def test_two_deletes_at_once_are_both_204_without_a_warning(client, headers, job, monkeypatch):
+    # the second finds nothing left to delete. SQLAlchemy warned about it, and
+    # the test stage's -W error would have turned that into a 500
+    deleted_once_loaded(monkeypatch)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        assert client.delete(f"/jobs/{job['id']}", headers=headers).status_code == 204
+    assert not [w for w in caught if issubclass(w.category, SAWarning)]
+
+
+def test_an_edit_deleted_while_it_reindexes_is_404_and_leaves_no_chunks(client, headers, job, monkeypatch):
+    index = rag_pipeline.index_posting
+
+    def index_then_deleted(row):
+        stored = index(row)
+        delete_elsewhere(JobPosting, row.id)
+        return stored
+
+    monkeypatch.setattr(rag_pipeline, "index_posting", index_then_deleted)
+    r = client.patch(f"/jobs/{job['id']}", headers=headers, json={"title": "Edited"})
+    assert r.status_code == 404
+    # the chunks it had just stored would have been orphans
+    assert rag_pipeline.collection.get(where={"job_id": job["id"]})["ids"] == []
+
+
+def test_reindex_skips_a_posting_deleted_part_way_through(client, monkeypatch):
+    headers = signup(client)
+    ids = [client.post("/jobs", headers=headers, json=posting()).json()["id"] for _ in range(3)]
+    index = rag_pipeline.index_posting
+
+    def index_then_delete_the_middle_one(row):
+        stored = index(row)
+        if row.id == ids[1]:
+            delete_elsewhere(JobPosting, ids[1])
+        return stored
+
+    monkeypatch.setattr(rag_pipeline, "index_posting", index_then_delete_the_middle_one)
+    r = client.post("/jobs/reindex", headers=headers)
+    # neither indexed nor failed: it's gone. The one after it still gets indexed
+    assert (r.status_code, r.json()) == (200, {"indexed": 2, "failed": []})
+    assert rag_pipeline.collection.get(where={"job_id": ids[1]})["ids"] == []
+    assert rag_pipeline.collection.get(where={"job_id": ids[2]})["ids"]
+
+
+def test_saving_a_posting_after_the_account_was_deleted_is_401(client, monkeypatch):
+    headers = signup(client)
+    user_id = client.get("/me", headers=headers).json()["id"]
+    hash_text = main.content_hash
+
+    def account_deleted_first(text):
+        delete_elsewhere(User, user_id)
+        return hash_text(text)
+
+    monkeypatch.setattr(main, "content_hash", account_deleted_first)
+    r = client.post("/jobs", headers=headers, json=posting())
+    # the foreign key fails, which said "You've already saved this posting"
+    assert r.status_code == 401
+
+
+def test_an_account_deleted_while_its_new_posting_indexes_is_401(client, monkeypatch):
+    # saved first, then the account goes before the posting is indexed
+    headers = signup(client)
+    user_id = client.get("/me", headers=headers).json()["id"]
+    index = rag_pipeline.index_posting
+
+    def index_then_account_deleted(row):
+        stored = index(row)
+        delete_elsewhere(User, user_id)
+        return stored
+
+    monkeypatch.setattr(rag_pipeline, "index_posting", index_then_account_deleted)
+    r = client.post("/jobs", headers=headers, json=posting())
+    assert r.status_code == 401
+
+
+def test_loading_samples_after_the_account_was_deleted_is_401(client, monkeypatch):
+    headers = signup(client)
+    user_id = client.get("/me", headers=headers).json()["id"]
+    samples = rag_pipeline.load_samples
+
+    def account_deleted_first():
+        delete_elsewhere(User, user_id)
+        return samples()
+
+    monkeypatch.setattr(rag_pipeline, "load_samples", account_deleted_first)
+    assert client.post("/jobs/samples", headers=headers).status_code == 401
+
+
+def test_any_other_deleted_row_is_404_not_500(client, headers, job, monkeypatch):
+    def gone(*_a):
+        raise StaleDataError("UPDATE statement on table 'job_postings' expected to update 1 row(s); 0 were matched.")
+
+    monkeypatch.setattr(main, "get_owned_job", gone)
+    r = client.get(f"/jobs/{job['id']}", headers=headers)
+    assert (r.status_code, r.json()["detail"]) == (404, "Not found: it was deleted while this request was running")
+
+
+# ── Request size ───────────────────────────────────────────────────────────
+
+def test_a_body_over_1_mb_is_413_before_it_is_read(client, headers):
+    r = client.post("/jobs", headers=headers, json=posting(text="x " * 600_000))
+    assert (r.status_code, r.json()["detail"]) == (413, "Request body is over 1 MB")
+    r = client.post("/auth/token", data={"username": "nobody_big", "password": "p" * 2_000_000})
+    assert r.status_code == 413
+
+
+def test_the_biggest_real_posting_still_fits(client, headers):
+    # 20,000 emoji, up to 12 bytes each once escaped as JSON: the largest valid body, at most about 240 KB
+    r = client.post("/jobs", headers=headers, json=posting(text="\U0001f600" * 20_000))
+    assert r.status_code == 201
 
 
 # ── Dependencies failing ───────────────────────────────────────────────────

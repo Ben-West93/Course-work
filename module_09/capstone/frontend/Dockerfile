@@ -14,10 +14,14 @@ WORKDIR /app
 COPY requirements.txt constraints.txt ./
 RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
 
-# no browser to open in a container, no usage stats, no Deploy button
+# no browser to open in a container, no usage stats, no Deploy button.
+# Uploads up to 1 MB: a posting is at most 20,000 characters, about 80 KB,
+# and Streamlit's default of 200 MB read the whole file into memory and sent
+# it to the API only to be turned down
 ENV STREAMLIT_SERVER_HEADLESS=true \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
-    STREAMLIT_CLIENT_TOOLBAR_MODE=minimal
+    STREAMLIT_CLIENT_TOOLBAR_MODE=minimal \
+    STREAMLIT_SERVER_MAX_UPLOAD_SIZE=1
 
 COPY app.py api_client.py ./
 

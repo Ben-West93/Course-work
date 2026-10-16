@@ -10,6 +10,7 @@ To run them against Postgres, see TEST_DATABASE_URL in conftest.py.
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import jwt
 import pytest
@@ -167,5 +168,23 @@ def test_tracked_usernames_are_pruned(monkeypatch):
     monkeypatch.setattr(auth, "failed_logins", {f"old_{i}": [0.0] for i in range(3)})
     monkeypatch.setattr(auth, "FAILED_LOGIN_KEYS", 3)
     monkeypatch.setattr(auth, "clock", lambda: auth.FAILED_LOGIN_WINDOW + 1.0)
-    auth.record_failed_login("new_one")
+    auth.start_login_attempt("new_one")
     assert list(auth.failed_logins) == ["new_one"]
+
+
+def test_each_attempt_counts_before_its_password_is_checked(monkeypatch):
+    # counted after the check, 19 of 40 guesses sent at once got through: all
+    # of them passed the check before the first wrong one was counted
+    monkeypatch.setattr(auth, "failed_logins", {})
+    starts = [auth.start_login_attempt("burst") for _ in range(8)]
+    assert starts[:5] == [0] * 5 and all(s > 0 for s in starts[5:])
+    # the ones turned away weren't counted, so it still opens 15 minutes after the first
+    assert len(auth.failed_logins["burst"]) == 5
+
+
+def test_guesses_sent_at_once_get_five_tries_between_them(client):
+    name = f"burst_{uuid.uuid4().hex[:8]}"
+    client.post("/auth/register", json={"username": name, "password": "the-right-one"})
+    with ThreadPoolExecutor(20) as pool:
+        codes = list(pool.map(lambda i: login(client, name, f"guess-{i:02d}").status_code, range(20)))
+    assert sorted(codes) == [401] * 5 + [429] * 15

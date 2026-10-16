@@ -111,11 +111,15 @@ def test_database_password_comes_from_its_file(clean_env, tmp_path):
 @pytest.mark.parametrize("contents, url, message", [
     (None, "postgresql+psycopg://jobfit@postgres/jobfit", "which can't be read"),
     ("  \n", "postgresql+psycopg://jobfit@postgres/jobfit", "which is empty"),
+    # was a bare UnicodeDecodeError that didn't say which setting was wrong
+    (b"\xff\xfe\x00", "postgresql+psycopg://jobfit@postgres/jobfit", "which isn't UTF-8 text"),
     ("secret", "sqlite:///./x.db", "only works with a postgresql+psycopg:// DATABASE_URL"),
 ])
 def test_bad_database_password_file_fails_at_startup(clean_env, tmp_path, contents, url, message):
     secret = tmp_path / "postgres_password"
-    if contents is not None:
+    if isinstance(contents, bytes):
+        secret.write_bytes(contents)
+    elif contents is not None:
         secret.write_text(contents)
     clean_env.setenv("DATABASE_URL", url)
     clean_env.setenv("DATABASE_PASSWORD_FILE", str(secret))

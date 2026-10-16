@@ -77,7 +77,10 @@ def authenticate(db: Session, username: str, password: str) -> User | None:
 # ── Failed sign-ins ────────────────────────────────────────────────────────
 
 # after 5 wrong passwords for one username within 15 minutes, that username
-# can't sign in until the oldest of them is 15 minutes old. Attempts while it's
+# can't sign in until the oldest of them is 15 minutes old. Each attempt is
+# counted when it starts and forgotten if the password was right. Counting it
+# after the password check let 19 of 40 guesses sent at once through, because
+# they all passed the check before any was counted. Attempts while it's
 # blocked aren't counted, so it always opens again. Keyed on the username, not
 # the address: everything through the UI comes from the frontend container.
 # Kept in memory, which works because the API runs one uvicorn worker, and a
@@ -97,32 +100,27 @@ def login_key(username: str) -> str:
     return username.strip().lower()[:100]
 
 
-def login_retry_after(username: str) -> int:
-    """Seconds until this username can try to sign in again, 0 if it can now."""
+def start_login_attempt(username: str) -> int:
+    """
+    Count a sign-in attempt for this username before its password is checked.
+    Returns 0 if it can go ahead, otherwise the seconds until one can, and
+    then it isn't counted. Wrong passwords and unknown usernames stay counted.
+    """
     key, now = login_key(username), clock()
     with failed_logins_lock:
         recent = [t for t in failed_logins.get(key, []) if now - t < FAILED_LOGIN_WINDOW]
-        if recent:
+        if len(recent) >= MAX_FAILED_LOGINS:
             failed_logins[key] = recent
-        else:
-            failed_logins.pop(key, None)
-        if len(recent) < MAX_FAILED_LOGINS:
-            return 0
-        return math.ceil(FAILED_LOGIN_WINDOW - (now - recent[-MAX_FAILED_LOGINS]))
-
-
-def record_failed_login(username: str):
-    """Count a wrong password, or an unknown username, against that username."""
-    now = clock()
-    with failed_logins_lock:
-        if len(failed_logins) >= FAILED_LOGIN_KEYS:
-            for key in [k for k, times in failed_logins.items() if now - times[-1] >= FAILED_LOGIN_WINDOW]:
-                del failed_logins[key]
-        failed_logins.setdefault(login_key(username), []).append(now)
+            return math.ceil(FAILED_LOGIN_WINDOW - (now - recent[-MAX_FAILED_LOGINS]))
+        if key not in failed_logins and len(failed_logins) >= FAILED_LOGIN_KEYS:
+            for stale in [k for k, times in failed_logins.items() if now - times[-1] >= FAILED_LOGIN_WINDOW]:
+                del failed_logins[stale]
+        failed_logins[key] = [*recent, now]
+        return 0
 
 
 def clear_failed_logins(username: str):
-    """Forget a username's failures once it signs in."""
+    """Forget a username's attempts once it signs in."""
     with failed_logins_lock:
         failed_logins.pop(login_key(username), None)
 

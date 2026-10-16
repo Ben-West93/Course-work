@@ -197,3 +197,13 @@ def test_list_jobs_stops_after_a_short_page_and_at_the_cap(fake_api, monkeypatch
     fake_api[("GET", "/jobs")] = pages(10_000, seen)
     assert len(api_client.list_jobs("t")) == 250
     assert seen == [0, 100, 200]
+
+
+def test_list_jobs_drops_a_posting_repeated_across_pages(fake_api):
+    # a posting saved between the two requests pushes #99 onto the second page as well
+    def route(params, **_kw):
+        start = 0 if params["offset"] == 0 else 99
+        return Reply(200, [{"id": i} for i in range(start, 100 if start == 0 else 130)])
+
+    fake_api[("GET", "/jobs")] = route
+    assert [j["id"] for j in api_client.list_jobs("t")] == list(range(130))
