@@ -13,8 +13,11 @@ the SQL match score and recommendations aren't built yet, and are marked
 retrieval settings, is in [`CHECK_IN.md`](CHECK_IN.md). The proposal is in
 [`../capstone-proposal/PROPOSAL.md`](../capstone-proposal/PROPOSAL.md).
 
-- [Quick start](#quick-start)
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start): clone, configure, start
 - [Using it](#using-it)
+- [API endpoints](#api-endpoints)
+- [Tech stack](#tech-stack)
 - [Running without Docker](#running-without-docker)
 - [How a posting is saved](#how-a-posting-is-saved)
 - [How a question is answered](#how-a-question-is-answered)
@@ -24,28 +27,71 @@ retrieval settings, is in [`CHECK_IN.md`](CHECK_IN.md). The proposal is in
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Project layout](#project-layout)
-- [Design](#design), written before the code
+- [Design](#design), written before the code, starting with the
+  [architecture diagram](#architecture)
+
+## Prerequisites
+
+| Need | Details |
+|---|---|
+| Git | to clone the repository |
+| Docker Desktop | with Compose 2.24 or newer (check with `docker-compose version`). Under *Settings → Resources*, give it at least 6 GB of memory, because the model alone takes 2.9 GB once loaded |
+| Disk | about 12 GB free: about 9 GB of images (7 GB of that is `ollama/ollama`) and the 2 GB model |
+| Free ports | 8000 (API), 8501 (UI) and 11435 (Ollama), all on 127.0.0.1 |
+| Ollama | nothing to install. It runs in its own container, and the first start downloads the model into a volume. You only need Ollama on your machine to [run without Docker](#running-without-docker) |
+| Python | nothing to install either, the images bring Python 3.11. To run without Docker or run the tests locally, use Python 3.11 or 3.13 |
+
+The commands use `docker-compose`, which Docker Desktop includes. `docker
+compose` (with a space) works the same.
 
 ## Quick start
 
-You need Docker Desktop with at least 6 GB of memory for its VM (the model
-alone takes 2.9 GB once loaded), about 4 GB of disk (2 GB of images plus the
-2 GB model), and nothing else listening
-on ports 8000, 8501 or 11435.
+1. **Clone the repository** and go to the project folder. Every command in
+   this README runs from there.
 
-```bash
-cp .env.example .env                                 # optional, see Configuration
-docker-compose up --build -d
-docker-compose ps -a                                 # ready when ollama-pull shows "Exited (0)"
-docker-compose exec backend python walkthrough.py    # checks the whole flow, should end "42 passed, 0 failed"
-```
+   ```bash
+   git clone https://github.com/Ben-West93/Course-work.git
+   ```
 
-Then open http://localhost:8501.
+   ```bash
+   cd Course-work/module_09/capstone
+   ```
 
-The first run downloads llama3.2:3b (2 GB), which takes a few minutes. Until
-that finishes, `/health` reports `degraded` and questions return 503.
-Signing up and saving postings already work, because search uses its own
-embedding model and only the answer needs Ollama.
+2. **Configure (optional).** A fresh clone runs on the defaults, so this
+   step can be skipped. To keep logins across restarts, copy the example and
+   set `JWT_SECRET_KEY` in it (see [Configuration](#configuration)):
+
+   ```bash
+   cp .env.example .env
+   ```
+
+3. **Build and start** the five services:
+
+   ```bash
+   docker-compose up --build -d
+   ```
+
+4. **Wait for the model.** It's ready when `ollama-pull` shows `Exited (0)`:
+
+   ```bash
+   docker-compose ps -a
+   ```
+
+5. **Check the whole flow.** It should end with `42 passed, 0 failed`:
+
+   ```bash
+   docker-compose exec backend python walkthrough.py
+   ```
+
+6. **Open http://localhost:8501**, create an account, and load the sample
+   postings on the Jobs page.
+
+The first run downloads the images and llama3.2:3b (2 GB). From a fresh
+clone on my connection that took about 4.5 minutes: 2 to pull the images,
+1 to build, and 1.5 for the model. Until the model is ready, `/health`
+reports `degraded` and questions return 503. Signing up and saving postings
+already work, because search uses its own embedding model and only the answer
+needs Ollama.
 
 `docker-compose down` stops everything and keeps the data.
 `docker-compose down -v` also deletes the database, the search index and the
@@ -90,6 +136,47 @@ curl -s -X POST localhost:8000/jobs/samples -H "Authorization: Bearer $TOKEN"
 ```bash
 curl -s -X POST localhost:8000/ask -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"question": "Do any jobs require Kubernetes?"}'
 ```
+
+## API endpoints
+
+Everything except `/health` and `/auth/*` needs `Authorization: Bearer
+<token>`, using the `access_token` from `POST /auth/token`. Another user's
+posting is a 404, the same as a missing one. Swagger at
+http://localhost:8000/docs lists the same routes and can call them.
+
+| Method | Path | Auth required | Description |
+|---|---|---|---|
+| GET | `/health` | no | Whether the database, ChromaDB, Ollama and the model are up: `ok`, `degraded` (logins and postings work, answers don't) or `down` (no database, HTTP 503) |
+| POST | `/auth/register` | no | Create an account from a JSON `username` and `password` |
+| POST | `/auth/token` | no | Log in with the form fields `username` and `password`. Returns a bearer token that lasts 30 minutes |
+| GET | `/me` | yes | The signed-in user |
+| DELETE | `/me` | yes | Delete the account, with its postings and their search chunks |
+| GET | `/jobs` | yes | Your saved postings, newest first. Query `limit` (1-100, default 50) and `offset` |
+| POST | `/jobs` | yes | Save a posting and index it for search. The same text twice is a 409 |
+| POST | `/jobs/samples` | yes | Add the 8 sample postings, skipping any already saved |
+| POST | `/jobs/reindex` | yes | Rebuild the search index for your postings from the database |
+| GET | `/jobs/{job_id}` | yes | One posting, with its full text |
+| PATCH | `/jobs/{job_id}` | yes | Edit a posting. A change to the text, title, company or location re-indexes it |
+| DELETE | `/jobs/{job_id}` | yes | Delete a posting and its search chunks |
+| POST | `/ask` | yes | Ask a question about your saved postings. Returns the answer with `[n]` citations, the excerpts they point to, a confidence and the model used |
+
+Request and response schemas, error codes and the planned endpoints are in
+[API endpoints and schemas](#api-endpoints-and-schemas), under Design.
+
+## Tech stack
+
+The exact versions are pinned in each `requirements.txt`.
+
+| Part | Technology |
+|---|---|
+| API | Python 3.11, FastAPI 0.142, Uvicorn, Pydantic 2.13 |
+| Database | PostgreSQL 17, through SQLAlchemy 2.1 and psycopg 3. SQLite outside Docker and in the tests |
+| Auth | JWT tokens with PyJWT, Argon2 password hashing with pwdlib |
+| Search | ChromaDB 1.5, embedded in the backend, with all-MiniLM-L6-v2 embeddings (ONNX) |
+| LLM | Ollama, running llama3.2:3b |
+| Frontend | Streamlit 1.64, calling the API with requests |
+| Containers | Docker and Docker Compose, five services |
+| Tests and lint | pytest 9.1, FastAPI's TestClient, Streamlit's AppTest, ruff |
 
 ## Running without Docker
 
@@ -390,6 +477,10 @@ uses the real model and services. Between them every stage has a check:
 
 ## Tests
 
+The `cd backend` and `cd frontend` commands need the virtualenv from
+[Running without Docker](#running-without-docker), and the lint also needs
+`pip install ruff`. The image build needs only Docker.
+
 | What | Command | Count |
 |---|---|---|
 | Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 414 |
@@ -572,7 +663,7 @@ no migrations yet, so a column change to an existing table needs
 score is the weighted share of a posting's skills the user has (required
 counts 2, preferred 1), computed in one SQL query.
 
-### API endpoints
+### API endpoints and schemas
 
 Only `/health` and `/auth/*` are public. Everything else needs
 `Authorization: Bearer <token>` (30-minute HS256 JWT by default). Another user's posting
