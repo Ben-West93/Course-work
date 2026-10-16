@@ -1,16 +1,17 @@
 # JobFit
 
-JobFit keeps the job postings I'm applying to next to my skills profile. It
-scores how well I match each one with a SQL query over structured skills, then
-has a local LLM explain the gaps from the posting text, quoting the lines it
-used. FastAPI, SQLAlchemy, ChromaDB, Ollama and Streamlit, all started with
-one `docker-compose up --build`.
+JobFit keeps the job postings I'm applying to in one place and answers
+questions about them. Ask "Which of my saved jobs are remote?" and a local LLM
+answers from the postings themselves, citing the lines it used and showing
+how far to trust the answer. FastAPI, SQLAlchemy, ChromaDB, Ollama and
+Streamlit, all started with one `docker-compose up --build`.
 
 **Status.** The MVP is built: accounts, saved postings, and questions answered
-from those postings with citations (the RAG core loop). The skills profile,
-the SQL match score and recommendations aren't built yet, and are marked
-*planned* below. The Day 8 status report, with the measurements behind the
-retrieval settings, is in [`CHECK_IN.md`](CHECK_IN.md). The proposal is in
+from those postings with citations (the RAG core loop). The rest of the
+proposal, a skills profile with a SQL match score for each posting and
+recommendations, isn't built yet, and is marked *planned* below. The Day 8
+status report, with the measurements behind the retrieval settings, is in
+[`CHECK_IN.md`](CHECK_IN.md). The proposal is in
 [`../capstone-proposal/PROPOSAL.md`](../capstone-proposal/PROPOSAL.md).
 
 - [Prerequisites](#prerequisites)
