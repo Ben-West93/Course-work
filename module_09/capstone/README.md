@@ -730,8 +730,8 @@ folder name.
 | Service | Built from | Host port | Volume | Healthcheck | Notes |
 |---|---|---|---|---|---|
 | `postgres` | `postgres:17-alpine` | none | `postgres_data` | `pg_isready` | only the backend talks to it |
-| `ollama` | `ollama/ollama` | 127.0.0.1:11435 | `ollama_data` | `ollama list` | 11435 so it can't clash with a host Ollama |
-| `ollama-pull` | `ollama/ollama` | none | none | none | one-shot: pulls `MODEL_NAME`, loads it once, exits 0 |
+| `ollama` | `ollama/ollama:0.40.5` | 127.0.0.1:11435 | `ollama_data` | `ollama list` | 11435 so it can't clash with a host Ollama |
+| `ollama-pull` | `ollama/ollama:0.40.5` | none | none | none | one-shot: pulls `MODEL_NAME`, loads it once, exits 0 |
 | `backend` | `./backend` (python:3.11-slim, multi-stage) | 127.0.0.1:8000 | `chroma_data` | `GET /health` | waits for postgres to be healthy, and for ollama only if it can |
 | `frontend` | `./frontend` (python:3.11-slim) | 127.0.0.1:8501 | none | none | `BACKEND_URL=http://backend:8000` |
 
@@ -754,6 +754,9 @@ Decisions:
   measured about 2s per answer on llama3.2:3b (0.8s on 1b, `CHECK_IN.md`).
   That's fast enough that the host-Ollama override from the design wasn't
   needed.
+- **The Ollama image is pinned to 0.40.5**, the version the walkthrough last
+  passed on, so a fresh clone doesn't get whatever `latest` is that day. To
+  upgrade, change the tag on both Ollama services and re-run the walkthrough.
 - **The backend doesn't wait for `ollama-pull`**, so logins and saving
   postings work during the first model download. `/health` reports
   `degraded` until the model is ready.

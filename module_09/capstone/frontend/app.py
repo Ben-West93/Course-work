@@ -305,7 +305,9 @@ def ask_page():
     for msg in st.session_state.chat:
         render(msg)
 
-    if question := st.chat_input("e.g. Which of my saved jobs ask for Docker?", max_chars=500):
+    # the example has to be one the model gets right on the samples. "Which of
+    # my saved jobs ask for Docker?" listed 3 of the 4 (CHECK_IN.md open issues)
+    if question := st.chat_input("e.g. Which of my saved jobs are remote?", max_chars=500):
         question = question.strip()
         if question:
             user_msg = {"role": "user", "kind": "answer", "content": question}

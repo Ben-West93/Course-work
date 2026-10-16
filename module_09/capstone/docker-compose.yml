@@ -36,7 +36,10 @@ services:
 
   # ── Ollama: local LLM runtime ──────────────────────────────────────────
   ollama:
-    image: ollama/ollama
+    # pinned, so a fresh clone gets the version the walkthrough last passed
+    # on rather than whatever `latest` is that day. ollama-pull uses the same
+    # tag. To upgrade, change both, then re-run the walkthrough
+    image: ollama/ollama:0.40.5
     restart: unless-stopped
     # for curl and the CLI from the host only. 11435 so it can't clash with
     # an Ollama installed on the host, which already has 11434
@@ -54,7 +57,8 @@ services:
 
   # ── One-shot: pulls the model, loads it once, exits ────────────────────
   ollama-pull:
-    image: ollama/ollama
+    # same tag as ollama above
+    image: ollama/ollama:0.40.5
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/sh", "-c"]

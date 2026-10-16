@@ -196,7 +196,7 @@ class AskRequest(BaseModel):
     """A question about the user's postings, optionally limited to some of them."""
 
     model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [
-        {"question": "Which of my saved jobs ask for Docker experience?", "n_results": 5},
+        {"question": "Which of my saved jobs are remote?", "n_results": 5},
     ]})
 
     question: str = Field(min_length=3, max_length=500)
