@@ -1,10 +1,11 @@
-# JobFit stack: postgres + ollama (+ one-shot model pull) + backend + frontend
+# JobFit stack: postgres (+ one-shot password) + ollama (+ one-shot model pull)
+# + backend + frontend
 #
 #   cp .env.example .env          (optional, set JWT_SECRET_KEY to keep logins across restarts)
 #   docker-compose up --build     (first run pulls the model, ~2GB for llama3.2:3b)
 #   docker-compose ps -a          (ready when ollama-pull shows "Exited (0)")
 #   docker-compose exec backend python walkthrough.py   (end-to-end check, see the README)
-#   docker-compose down           (-v would also delete all three volumes)
+#   docker-compose down           (-v would also delete all four volumes)
 #
 # Services reach each other by service name on the compose network. Inside a
 # container localhost is that container, never the host or another service.
@@ -14,17 +15,36 @@ name: jobfit
 
 services:
 
+  # ── One-shot: makes the database password, exits ───────────────────────
+  postgres-secret:
+    image: postgres:17-alpine
+    entrypoint: ["/bin/sh", "-c"]
+    # 32 random hex characters, made on the first start and kept in the
+    # db_secret volume, so there's no password to set and none in the repo.
+    # Readable by all because Postgres reads it as its own user. Only
+    # postgres and the backend mount the volume
+    command: ["test -s /run/secrets/postgres_password || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \\n' > /run/secrets/postgres_password; chmod 444 /run/secrets/postgres_password"]
+    volumes:
+      - db_secret:/run/secrets
+    restart: "no"
+
   # ── Postgres: users and postings ───────────────────────────────────────
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-jobfit}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobfit}
+      # read only when the database is first created, see the README's
+      # Troubleshooting for a database from before the password was generated
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
       POSTGRES_DB: ${POSTGRES_DB:-jobfit}
     # not published: only the backend talks to it, over the compose network
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - db_secret:/run/secrets:ro
+    depends_on:
+      postgres-secret:
+        condition: service_completed_successfully
     healthcheck:
       # $$ so compose passes the variable through to the container's shell
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
@@ -85,11 +105,14 @@ services:
       # same default as ollama-pull above, so the model the API asks for is
       # always the one that was downloaded, .env or not
       MODEL_NAME: ${MODEL_NAME:-llama3.2:3b}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobfit}:${POSTGRES_PASSWORD:-jobfit}@postgres:5432/${POSTGRES_DB:-jobfit}
+      # no password in the URL, config.py adds the one postgres-secret made
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-jobfit}@postgres:5432/${POSTGRES_DB:-jobfit}
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
       OLLAMA_URL: http://ollama:11434
       CHROMA_PATH: /app/chroma
     volumes:
       - chroma_data:/app/chroma
+      - db_secret:/run/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,11 +141,17 @@ services:
       # Streamlit's Python calls the API from inside this container, so it
       # uses the service name, not localhost
       BACKEND_URL: http://backend:8000
+      # what the backend gives Ollama, from the same .env. /ask waits 30s longer
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-120}
     depends_on:
-      - backend
+      # until /health answers, every page would only say "Can't reach the API"
+      backend:
+        condition: service_healthy
 
 # managed by Docker outside the containers. down keeps them, down -v deletes them
 volumes:
   postgres_data:
   chroma_data:
   ollama_data:
+  # the generated database password. Delete it with postgres_data or not at all
+  db_secret:

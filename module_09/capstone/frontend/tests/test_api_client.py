@@ -10,7 +10,7 @@ import pytest
 import requests
 
 import api_client
-from api_client import ASK_TIMEOUT, BACKEND_URL, ApiError, ApiTimeout, SessionExpired
+from api_client import BACKEND_URL, ApiError, ApiTimeout, SessionExpired
 from tests.conftest import HEALTH, Reply
 
 
@@ -29,7 +29,7 @@ def test_token_goes_in_the_bearer_header(fake_api):
     fake_api[("GET", "/jobs")] = recorder(Reply(200, []), seen)
     assert api_client.list_jobs("abc") == []
     assert seen["headers"] == {"Authorization": "Bearer abc"}
-    assert seen["params"] == {"limit": 100} and seen["timeout"] == 30
+    assert seen["params"] == {"limit": 100, "offset": 0} and seen["timeout"] == 30
 
 
 def test_no_token_means_no_authorization_header(fake_api):
@@ -151,4 +151,49 @@ def test_ask_sends_job_ids_only_when_picked(fake_api, job_ids, body):
     assert api_client.ask("What pays best?", "t", job_ids) == answer
     assert seen["json"] == body
     # longer than the backend's own 120s wait for Ollama
-    assert seen["timeout"] == ASK_TIMEOUT > 120
+    assert seen["timeout"] == 150
+
+
+@pytest.mark.parametrize("value, timeout", [("300", 330), ("600", 630), ("", 150), ("abc", 150), (None, 150)])
+def test_ask_waits_longer_than_the_backends_ollama_timeout(fake_api, monkeypatch, value, timeout):
+    # OLLAMA_TIMEOUT can go up to 600. A fixed 150s gave up before the backend did
+    if value is None:
+        monkeypatch.delenv("OLLAMA_TIMEOUT", raising=False)
+    else:
+        monkeypatch.setenv("OLLAMA_TIMEOUT", value)
+    seen = {}
+    fake_api[("POST", "/ask")] = recorder(Reply(200, {"answer": "x", "confidence": "low", "sources": []}), seen)
+    api_client.ask("What pays best?", "t")
+    assert seen["timeout"] == timeout
+
+
+# ── list_jobs(): paging ────────────────────────────────────────────────────
+
+def pages(total: int, seen: list):
+    """A /jobs route holding `total` postings, which records each request's offset."""
+    def route(params, **_kw):
+        seen.append(params["offset"])
+        start = params["offset"]
+        return Reply(200, [{"id": i} for i in range(start, min(start + params["limit"], total))])
+    return route
+
+
+def test_list_jobs_pages_past_the_first_hundred(fake_api):
+    seen = []
+    fake_api[("GET", "/jobs")] = pages(130, seen)
+    assert [j["id"] for j in api_client.list_jobs("t")] == list(range(130))
+    assert seen == [0, 100]
+
+
+def test_list_jobs_stops_after_a_short_page_and_at_the_cap(fake_api, monkeypatch):
+    seen = []
+    fake_api[("GET", "/jobs")] = pages(100, seen)
+    assert len(api_client.list_jobs("t")) == 100
+    # exactly 100 needs one more request to find out there's no more
+    assert seen == [0, 100]
+
+    seen.clear()
+    monkeypatch.setattr(api_client, "MAX_POSTINGS", 250)
+    fake_api[("GET", "/jobs")] = pages(10_000, seen)
+    assert len(api_client.list_jobs("t")) == 250
+    assert seen == [0, 100, 200]

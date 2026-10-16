@@ -212,19 +212,37 @@ def register(req: UserCreate, db: DbSession):
     return user
 
 
-@app.post("/auth/token", response_model=Token, responses={401: {"description": "Wrong username or password."}})
+@app.post("/auth/token", response_model=Token, responses={
+    401: {"description": "Wrong username or password."},
+    429: {"description": "Too many wrong passwords for this username in the last 15 minutes."},
+})
 def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession):
     """
     Log in with the form fields `username` and `password`, which is what
     Swagger's Authorize button sends. Returns a bearer token for every other route.
+    After 5 wrong passwords for a username in 15 minutes it's a 429 until the
+    oldest of them is 15 minutes old, even with the right password.
     """
+    # checked before the password, otherwise the right one would still get in
+    # and the block would only slow the guessing down
+    retry_after = auth.login_retry_after(form.username)
+    if retry_after:
+        minutes = math.ceil(retry_after / 60)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many failed sign-ins for this username. Try again in {minutes} "
+                   f"minute{'s' if minutes != 1 else ''}.",
+            headers={"Retry-After": str(retry_after)},
+        )
     user = auth.authenticate(db, form.username, form.password)
     if user is None:
+        auth.record_failed_login(form.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    auth.clear_failed_logins(form.username)
     return Token(access_token=auth.create_access_token(user.id), expires_in=settings.jwt_expire_minutes * 60)
 
 

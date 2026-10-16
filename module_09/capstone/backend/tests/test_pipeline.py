@@ -23,8 +23,8 @@ TEXT = "Requirements:\n" + "- Python and SQL experience for backend services\n" 
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    for name in ("DATABASE_URL", "CHROMA_PATH", "OLLAMA_URL", "MODEL_NAME", "JWT_SECRET_KEY", "JWT_ALGORITHM",
-                 "JWT_EXPIRE_MINUTES", "MAX_DISTANCE", "OLLAMA_TIMEOUT", "DEBUG"):
+    for name in ("DATABASE_URL", "DATABASE_PASSWORD_FILE", "CHROMA_PATH", "OLLAMA_URL", "MODEL_NAME", "JWT_SECRET_KEY",
+                 "JWT_ALGORITHM", "JWT_EXPIRE_MINUTES", "MAX_DISTANCE", "OLLAMA_TIMEOUT", "DEBUG"):
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
@@ -95,6 +95,33 @@ def test_settings_repr_hides_secrets(clean_env):
     shown = repr(config.Settings())
     assert "hunter22" not in shown and "x" * 40 not in shown
     assert "postgres:5432/jobfit" in shown
+
+
+def test_database_password_comes_from_its_file(clean_env, tmp_path):
+    # what compose sets: the URL has no password, the generated one is in a file
+    secret = tmp_path / "postgres_password"
+    secret.write_text("0123456789abcdef0123456789abcdef\n")
+    clean_env.setenv("DATABASE_URL", "postgresql+psycopg://jobfit@postgres:5432/jobfit")
+    clean_env.setenv("DATABASE_PASSWORD_FILE", str(secret))
+    s = config.Settings()
+    assert s.database_url == "postgresql+psycopg://jobfit:0123456789abcdef0123456789abcdef@postgres:5432/jobfit"
+    assert "0123456789abcdef" not in repr(s)
+
+
+@pytest.mark.parametrize("contents, url, message", [
+    (None, "postgresql+psycopg://jobfit@postgres/jobfit", "which can't be read"),
+    ("  \n", "postgresql+psycopg://jobfit@postgres/jobfit", "which is empty"),
+    ("secret", "sqlite:///./x.db", "only works with a postgresql+psycopg:// DATABASE_URL"),
+])
+def test_bad_database_password_file_fails_at_startup(clean_env, tmp_path, contents, url, message):
+    secret = tmp_path / "postgres_password"
+    if contents is not None:
+        secret.write_text(contents)
+    clean_env.setenv("DATABASE_URL", url)
+    clean_env.setenv("DATABASE_PASSWORD_FILE", str(secret))
+    with pytest.raises(ValueError, match=re.escape(message)) as e:
+        config.Settings()
+    assert "DATABASE_PASSWORD_FILE" in str(e.value)
 
 
 # ── Stage 1: database startup ──────────────────────────────────────────────

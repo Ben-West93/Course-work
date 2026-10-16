@@ -65,7 +65,9 @@ compose` (with a space) works the same.
    cp .env.example .env
    ```
 
-3. **Build and start** the five services:
+3. **Build and start** the stack. Two of its six services are one-shot
+   setup steps: one generates the database password, the other downloads
+   the model:
 
    ```bash
    docker-compose up --build -d
@@ -101,7 +103,8 @@ downloaded model.
 
 1. **Create an account.** Usernames are 3-50 characters (letters, digits,
    `_ . -`) and are stored in lowercase. Passwords are 8-128 characters. A login
-   lasts 30 minutes.
+   lasts 30 minutes. Five wrong passwords for one username within 15 minutes
+   block it until the oldest of them is 15 minutes old.
 2. **Save postings** on the Jobs page.
    - *Load sample postings* adds 8 made-up junior AI and backend postings.
    - To add your own, paste the text or upload a `.txt` or `.md` file. It
@@ -111,6 +114,7 @@ downloaded model.
    - Saving the same text twice is rejected.
    - A posting marked *not indexed* was saved, but the search index couldn't
      take it. *Rebuild search index* fixes that.
+   - *Delete* asks once more before it removes a posting.
 3. **Ask** on the Ask page. Name the company ("What does Cobalt Freight
    require?") and only that company's postings are searched. You can also
    pick postings in the filter above the chat. Every answer shows:
@@ -148,7 +152,7 @@ http://localhost:8000/docs lists the same routes and can call them.
 |---|---|---|---|
 | GET | `/health` | no | Whether the database, ChromaDB, Ollama and the model are up: `ok`, `degraded` (logins and postings work, answers don't) or `down` (no database, HTTP 503) |
 | POST | `/auth/register` | no | Create an account from a JSON `username` and `password` |
-| POST | `/auth/token` | no | Log in with the form fields `username` and `password`. Returns a bearer token that lasts 30 minutes |
+| POST | `/auth/token` | no | Log in with the form fields `username` and `password`. Returns a bearer token that lasts 30 minutes. After 5 wrong passwords for a username in 15 minutes it's a 429, even with the right one |
 | GET | `/me` | yes | The signed-in user |
 | DELETE | `/me` | yes | Delete the account, with its postings and their search chunks |
 | GET | `/jobs` | yes | Your saved postings, newest first. Query `limit` (1-100, default 50) and `offset` |
@@ -175,7 +179,7 @@ The exact versions are pinned in each `requirements.txt`.
 | Search | ChromaDB 1.5, embedded in the backend, with all-MiniLM-L6-v2 embeddings (ONNX) |
 | LLM | Ollama, running llama3.2:3b |
 | Frontend | Streamlit 1.64, calling the API with requests |
-| Containers | Docker and Docker Compose, five services |
+| Containers | Docker and Docker Compose: six services, two of them one-shot setup steps. Both images run as a non-root user and install the versions pinned in `constraints.txt` |
 | Tests and lint | pytest 9.1, FastAPI's TestClient, Streamlit's AppTest, ruff |
 
 ## Running without Docker
@@ -457,9 +461,9 @@ uses the real model and services. Between them every stage has a check:
 
 | Stage | Code | pytest (backend unless noted) | Live, in `walkthrough.py` |
 |---|---|---|---|
-| Settings | `config.py` | `test_pipeline.py`: defaults, 11 bad values each fail with the variable's name, the secret's minimum length for each JWT algorithm, URL rewriting, secrets hidden from logs | |
+| Settings | `config.py` | `test_pipeline.py`: defaults, 11 bad values each fail with the variable's name, the secret's minimum length for each JWT algorithm, URL rewriting, secrets hidden from logs, the database password read from its file | |
 | Startup | `database.init_db` | `test_pipeline.py`: retries while Postgres isn't up, gives up after the last attempt | stage 1 |
-| Accounts and tokens | `auth.py` | `test_auth.py`, `test_edge_cases.py`: bounds, case, hashing, forged, expired, unsigned and out-of-range tokens, only the configured algorithm accepted, a deleted account's token never opening a new one, tokens from before the account existed | stage 2 |
+| Accounts and tokens | `auth.py` | `test_auth.py`, `test_edge_cases.py`: bounds, case, hashing, forged, expired, unsigned and out-of-range tokens, only the configured algorithm accepted, a deleted account's token never opening a new one, tokens from before the account existed; 5 wrong passwords block a username (unknown ones too, the right password included) until the window passes | stage 2 |
 | Saving and validation | `schemas.py`, `main.create_job` | `test_crud.py`: create, list, get, edit, delete, samples, another user's postings; `test_edge_cases.py`: every limit, NUL bytes, zero-width text, links, unknown fields, duplicates | stage 3 |
 | Postgres rows | `models.py` | the whole suite, on SQLite by default and on Postgres with `TEST_DATABASE_URL` | stage 4 |
 | Chunking | `rag_pipeline.chunk_posting` | 200-seed fuzz (no text lost, nothing over 500), pathological inputs, headings | stage 5 |
@@ -472,7 +476,7 @@ uses the real model and services. Between them every stage has a check:
 | Response | `main.ask` | `test_rag.py`: an answer with its sources, no matching postings skips the model; `test_pipeline.py`: source `n` is excerpt `[n]`, titles come from Postgres | stage 8 |
 | Guards | `main.ask`, `get_owned_job` | user isolation, off-topic questions skip the model (even with a planted posting that shares their words), Postgres down gives 503 | stage 10, including planted instructions against the real model |
 | Delete and cascade | `main.delete_me` | the cascade on SQLite and Postgres | stage 11 |
-| UI | `frontend/app.py`, `frontend/api_client.py` | `frontend/tests/test_app.py`: question to rendered answer, filters, every failure as a chat reply or an error on the page (sign-in and every Jobs action with the API gone), escaping of titles, companies and locations, links in answers as plain text, form kept on error; `test_api_client.py`: what each call sends, every network failure as an `ApiError` | stage 1 (reachable) |
+| UI | `frontend/app.py`, `frontend/api_client.py` | `frontend/tests/test_app.py`: question to rendered answer, filters, every failure as a chat reply or an error on the page (sign-in and every Jobs action with the API gone), escaping of titles, companies and locations, links in answers as plain text, form kept on error, Delete asking first, postings past the first 100; `test_api_client.py`: what each call sends, paging through `/jobs`, the `/ask` timeout following `OLLAMA_TIMEOUT`, every network failure as an `ApiError` | stage 1 (reachable) |
 | Compose wiring | `docker-compose.yml` | `docker build --target test ./backend` | stage 1 |
 
 ## Tests
@@ -483,15 +487,17 @@ The `cd backend` and `cd frontend` commands need the virtualenv from
 
 | What | Command | Count |
 |---|---|---|
-| Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 417 |
-| Backend, inside the image with no network | `docker build --target test ./backend` | 417 |
-| Backend against Postgres (stack up) | the three commands below | 417 |
-| Frontend (AppTest and the API client, fake API) | `cd frontend && pytest -q` | 101 |
+| Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 425 |
+| Backend, inside the image with no network | `docker build --target test ./backend` | 425 |
+| Backend against Postgres (stack up) | the three commands below | 425 |
+| Frontend (AppTest and the API client, fake API) | `cd frontend && pytest -q` | 110 |
 | Whole flow against the live stack | `docker-compose exec backend python walkthrough.py` | 42 checks |
 | Lint | `ruff check backend/ frontend/` | |
 
 Against Postgres. The suite drops every table in the database it's given,
-so it refuses any database whose name doesn't contain "test":
+so it refuses any database whose name doesn't contain "test". The first
+command says so if `jobfit_test` already exists, which is fine. The last one
+reads the generated password from its volume:
 
 ```bash
 docker compose exec postgres createdb -U jobfit jobfit_test
@@ -502,7 +508,24 @@ docker build --target test -t jobfit-backend-test ./backend
 ```
 
 ```bash
-docker run --rm --network jobfit_default -e TEST_DATABASE_URL=postgresql+psycopg://jobfit:jobfit@postgres:5432/jobfit_test jobfit-backend-test pytest tests/ -q
+docker run --rm --network jobfit_default -v jobfit_db_secret:/run/secrets:ro -e DATABASE_PASSWORD_FILE=/run/secrets/postgres_password -e TEST_DATABASE_URL=postgresql+psycopg://jobfit@postgres:5432/jobfit_test jobfit-backend-test pytest tests/ -q
+```
+
+`backend/constraints.txt` and `frontend/constraints.txt` pin every package in
+each image, not just the ones `requirements.txt` names. After changing a
+`requirements.txt`, take the `-c constraints.txt` off its `pip install` in the
+Dockerfile, rebuild, run the tests and the walkthrough, then write the image's
+versions under the comment lines at the top of the file and put the `-c`
+back. For the backend, this prints them:
+
+```bash
+docker build --target test -t jobfit-backend-test ./backend && docker run --rm --user root jobfit-backend-test pip --python /opt/venv/bin/python freeze
+```
+
+For the frontend:
+
+```bash
+docker build -t jobfit-frontend ./frontend && docker run --rm --user root jobfit-frontend pip freeze
 ```
 
 ## Configuration
@@ -518,12 +541,13 @@ containers itself, and those override `.env`.
 | `JWT_EXPIRE_MINUTES` | 30 | backend | how long a login lasts |
 | `MODEL_NAME` | `llama3.2:3b` | backend, ollama-pull | the model that writes answers. `llama3.2:1b` is a 1.3 GB download and twice as fast, but got 3 of 9 test questions right against 3b's 6, and made things up (`CHECK_IN.md`) |
 | `MAX_DISTANCE` | 1.45 | backend | open searches drop vector matches further than this (squared L2, 0-4), and a question with nothing within it is off topic. Keyword matches are kept whatever their distance |
-| `OLLAMA_TIMEOUT` | 120 | backend | seconds before `/ask` gives up with a 503 |
+| `OLLAMA_TIMEOUT` | 120 | backend, frontend | seconds before `/ask` gives up with a 503. Compose passes it to the frontend too, which waits 30s longer for the answer |
 | `DEBUG` | false | backend | logs retrieval distances and Ollama timings |
 | `DATABASE_URL` | SQLite in `backend/` | backend | outside Docker only. `postgres://` and `postgresql://` are rewritten to `postgresql+psycopg://` |
 | `CHROMA_PATH` | `backend/chroma` | backend | outside Docker only |
 | `OLLAMA_URL` | `http://localhost:11434` | backend | outside Docker only |
-| `POSTGRES_USER` / `_PASSWORD` / `_DB` | `jobfit` | compose | Postgres credentials, used to build the backend's `DATABASE_URL` |
+| `POSTGRES_USER` / `POSTGRES_DB` | `jobfit` | compose | the database user and name, used to build the backend's `DATABASE_URL`. There's no password to set: the first start generates one into the `db_secret` volume |
+| `DATABASE_PASSWORD_FILE` | unset | backend | a file holding the Postgres password, added to `DATABASE_URL`. Compose points it at the generated one |
 | `OLLAMA_HOST_PORT` | 11435 | compose | host port for the Ollama container, so it can't clash with a host Ollama on 11434 |
 | `BACKEND_URL` | `http://localhost:8000` | frontend | outside Docker only. Compose sets `http://backend:8000` |
 | `API_URL`, `FRONTEND_URL` | `http://localhost:8000`, `http://frontend:8501` | walkthrough | where the walkthrough finds the services |
@@ -545,12 +569,29 @@ containers itself, and those override `.env`.
 | A posting shows *not indexed* | ChromaDB failed when it was saved | Jobs page, *Rebuild search index* |
 | The answer misses something that's in a posting | the fact isn't worded like the question (the posting says "Pay", you asked "salary"), or the model skipped an excerpt it was given | use the posting's own word, name the company, or pick the posting in the filter. The Sources list shows what the model was given |
 | The walkthrough fails at stage 1 | the stack isn't fully up | `docker-compose ps -a`, then run it again |
+| Sign-in: "Too many failed sign-ins for this username" (429) | 5 wrong passwords for it in the last 15 minutes | wait the minutes it says, or restart the backend, which clears the count |
+| Backend keeps restarting, log says `attempt to write a readonly database` or `password authentication failed for user "jobfit"` | the volumes come from a copy older than 2026-10-16, before the containers ran as a non-root user and the password was generated | run the two commands below once, then `docker-compose up -d` |
+
+The first gives the ChromaDB volume to the backend's user. The second
+changes the old database's password to the generated one, through
+Postgres's local socket, which needs no password:
+
+```bash
+docker-compose run --rm --no-deps --user root backend chown -R app:app /app/chroma
+```
+
+```bash
+docker-compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "ALTER USER CURRENT_USER PASSWORD '\''$(cat "$POSTGRES_PASSWORD_FILE")'\''"'
+```
+
+Deleting the volumes instead (`docker-compose down -v`) also works, but
+loses the saved accounts and postings.
 
 ## Project layout
 
 ```
 capstone/
-├── docker-compose.yml        five services, see Design
+├── docker-compose.yml        six services, see Design
 ├── .env.example              every setting, with defaults
 ├── CHECK_IN.md               Day 8 status, measurements and open issues
 ├── ruff.toml
@@ -567,13 +608,13 @@ capstone/
 │   ├── tests/                test_auth.py, test_crud.py, test_rag.py, test_edge_cases.py,
 │   │                         test_pipeline.py, conftest.py
 │   ├── Dockerfile            builder, test and runtime stages
-│   └── requirements.txt, requirements-dev.txt, pytest.ini
+│   └── requirements.txt, requirements-dev.txt, constraints.txt, pytest.ini
 └── frontend/
     ├── app.py                Streamlit: sign in, Jobs, Ask
     ├── api_client.py         every call to the API, failures raised as ApiError
     ├── tests/                test_app.py (AppTest), test_api_client.py, conftest.py (the fake API)
     ├── Dockerfile
-    └── requirements.txt, requirements-dev.txt, pytest.ini
+    └── requirements.txt, requirements-dev.txt, constraints.txt, pytest.ini
 ```
 
 ## Design
@@ -593,12 +634,14 @@ flowchart TB
         postgres[("postgres<br/>PostgreSQL 17 :5432")]
         ollama["ollama<br/>llama3.2:3b :11434"]
         pull["ollama-pull<br/>one-shot pull + warm-up"]
+        secret["postgres-secret<br/>one-shot password"]
     end
 
     subgraph volumes["Docker named volumes"]
         pgvol[("postgres_data")]
         chromavol[("chroma_data")]
         ollamavol[("ollama_data")]
+        secretvol[("db_secret")]
     end
 
     browser -- "HTTP 127.0.0.1:8501" --> frontend
@@ -609,6 +652,9 @@ flowchart TB
     postgres --- pgvol
     backend --- chromavol
     ollama --- ollamavol
+    secret -- "writes it once" --> secretvol
+    secretvol -. "read-only" .-> postgres
+    secretvol -. "read-only" .-> backend
 ```
 
 **Communication.** Services talk over the default compose network by service
@@ -616,8 +662,9 @@ name (`backend`, `postgres`, `ollama`). Inside a container `localhost` is that
 container, so `http://localhost:8000` from the frontend container is refused.
 Streamlit calls the API from its own Python process, through
 `frontend/api_client.py`, so the JWT stays server-side and never reaches the
-browser. No volume is shared: each named
-volume belongs to one service.
+browser. The only volume two services share is `db_secret`, which postgres
+and the backend mount read-only to get the generated password. Each of the
+others belongs to one service.
 
 The step-by-step flows are in [How a posting is saved](#how-a-posting-is-saved)
 and [How a question is answered](#how-a-question-is-answered).
@@ -629,9 +676,10 @@ and [How a question is answered](#how-a-question-is-answered).
 | PostgreSQL 17 (SQLAlchemy) | users and postings. *Planned:* skills catalogue, posting and user skills, analyses | `postgres_data` |
 | ChromaDB, embedded in the backend | posting chunks, 384-dim embeddings, `user_id`/`job_id`/`chunk` metadata | `chroma_data` |
 | Ollama | `llama3.2:3b` weights | `ollama_data` |
+| postgres-secret | the generated database password | `db_secret` |
 
 Postgres is the source of truth. ChromaDB is an index rebuilt from it
-(`POST /jobs/reindex`). All three volumes survive `docker-compose down` and
+(`POST /jobs/reindex`). All four volumes survive `docker-compose down` and
 image rebuilds; only `down -v` deletes them. Outside Docker the backend falls
 back to SQLite and a local `./chroma` folder, which is also what the tests use.
 
@@ -700,6 +748,7 @@ Errors are always `{"detail": ...}`:
 | 404 | not found, or not yours |
 | 409 | username taken, or the same posting text saved twice |
 | 422 | invalid input. `detail` lists each field and why |
+| 429 | 5 wrong passwords for this username in the last 15 minutes. `Retry-After` says how many seconds are left |
 | 503 | the API is fine but a service it needs is down: `Database unavailable`, `Ollama unavailable`, `Ollama timed out`, `Ollama returned 404 for model …`, `ChromaDB search failed` |
 
 Pydantic schemas (`?` = optional). Request bodies reject unknown fields.
@@ -729,13 +778,15 @@ folder name.
 
 | Service | Built from | Host port | Volume | Healthcheck | Notes |
 |---|---|---|---|---|---|
-| `postgres` | `postgres:17-alpine` | none | `postgres_data` | `pg_isready` | only the backend talks to it |
+| `postgres-secret` | `postgres:17-alpine` | none | `db_secret` | none | one-shot: writes a random password the first time, exits 0 |
+| `postgres` | `postgres:17-alpine` | none | `postgres_data`, `db_secret` (read-only) | `pg_isready` | only the backend talks to it. Waits for postgres-secret |
 | `ollama` | `ollama/ollama:0.40.5` | 127.0.0.1:11435 | `ollama_data` | `ollama list` | 11435 so it can't clash with a host Ollama |
 | `ollama-pull` | `ollama/ollama:0.40.5` | none | none | none | one-shot: pulls `MODEL_NAME`, loads it once, exits 0 |
-| `backend` | `./backend` (python:3.11-slim, multi-stage) | 127.0.0.1:8000 | `chroma_data` | `GET /health` | waits for postgres to be healthy, and for ollama only if it can |
-| `frontend` | `./frontend` (python:3.11-slim) | 127.0.0.1:8501 | none | none | `BACKEND_URL=http://backend:8000` |
+| `backend` | `./backend` (python:3.11-slim, multi-stage) | 127.0.0.1:8000 | `chroma_data`, `db_secret` (read-only) | `GET /health` | waits for postgres to be healthy, and for ollama only if it can. Runs as `app` |
+| `frontend` | `./frontend` (python:3.11-slim) | 127.0.0.1:8501 | none | none | waits for the backend to be healthy. `BACKEND_URL=http://backend:8000`, and `OLLAMA_TIMEOUT` from `.env`. Runs as `app` |
 
-Every service except `ollama-pull` has `restart: unless-stopped`. Ports are
+Every service except the one-shot `postgres-secret` and `ollama-pull` has
+`restart: unless-stopped`. Ports are
 bound to 127.0.0.1, so nothing is reachable from the rest of the network.
 
 Decisions:
@@ -747,7 +798,9 @@ Decisions:
   one uvicorn worker.
 - **Embeddings come from Chroma's built-in all-MiniLM-L6-v2**, baked into the
   backend image. Saving and searching postings still work while Ollama is
-  down or still pulling the model.
+  down or still pulling the model. Telemetry in onnxruntime, which runs the
+  model, is switched off: an upload still in flight when Python exited
+  crashed about 1 test run in 3 on macOS, after every test had passed.
 - **Ollama runs in a container**, reached by service name at
   `http://ollama:11434`, so a clean clone comes up with one
   `docker-compose up --build`. In Docker on a Mac it runs on CPU only, which
@@ -760,5 +813,17 @@ Decisions:
 - **The backend doesn't wait for `ollama-pull`**, so logins and saving
   postings work during the first model download. `/health` reports
   `degraded` until the model is ready.
+- **The database password is generated on the first start**, by the
+  one-shot `postgres-secret`, into the `db_secret` volume. A fresh clone
+  needs no `.env`, and no password is in the repo. Postgres reads it with
+  `POSTGRES_PASSWORD_FILE`, the backend with `DATABASE_PASSWORD_FILE`.
+- **Both images run as a non-root user**, `app` (uid 10001). The backend's
+  code is owned by root, so the app can read it but not change it.
+- **Every package version is pinned.** `requirements.txt` names what the code
+  imports, and `constraints.txt` pins everything those pull in, as frozen
+  from the image that passed the tests and the walkthrough.
+- **The frontend waits for the backend to be healthy**, so the UI never opens
+  on "Can't reach the API" while the backend is still starting.
 - **Volumes that persist:** `postgres_data` (database), `chroma_data` (vector
-  index) and `ollama_data` (model weights).
+  index), `ollama_data` (model weights) and `db_secret` (the generated
+  password). Delete `db_secret` only together with `postgres_data`.

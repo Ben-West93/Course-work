@@ -23,10 +23,17 @@ import re
 import time
 
 import chromadb
+import onnxruntime
 import requests
 from fastapi import HTTPException
 
 from config import BASE_DIR, settings
+
+# onnxruntime, which runs ChromaDB's embedding model, uploads usage telemetry
+# from a background thread. An upload still in flight when Python exited
+# crashed the process on macOS ("libc++abi: ... recursive_mutex lock failed",
+# exit code 134), after every test had already passed. Nothing here needs it
+onnxruntime.disable_telemetry_events()
 
 log = logging.getLogger("uvicorn.error")
 if settings.debug:

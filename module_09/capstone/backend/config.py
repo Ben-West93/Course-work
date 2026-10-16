@@ -11,6 +11,8 @@ values for the container.
 
 import os
 
+from sqlalchemy.engine import make_url
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -78,12 +80,32 @@ def normalise_db_url(url: str) -> str:
     return url
 
 
+def with_password_file(url: str, name: str, path: str) -> str:
+    """
+    The Postgres URL with the password from the file at `path` added. Compose
+    generates the password into a volume on the first start, so it's never in
+    the URL, .env or the repo.
+    """
+    if not url.startswith("postgresql"):
+        raise ValueError(f"{name} only works with a postgresql+psycopg:// DATABASE_URL")
+    try:
+        with open(path, encoding="utf-8") as f:
+            password = f.read().strip()
+    except OSError as e:
+        raise ValueError(f"{name} is {path!r}, which can't be read ({e.strerror})") from None
+    if not password:
+        raise ValueError(f"{name} is {path!r}, which is empty")
+    return make_url(url).set(password=password).render_as_string(hide_password=False)
+
+
 class Settings:
     """All backend configuration. Import the `settings` instance, not this class."""
 
     def __init__(self):
         """Read every variable and check it. A bad value raises ValueError, which stops the API at startup."""
         self.database_url = normalise_db_url(env_str("DATABASE_URL", f"sqlite:///{local_path('jobfit.db')}"))
+        if password_file := env_str("DATABASE_PASSWORD_FILE", ""):
+            self.database_url = with_password_file(self.database_url, "DATABASE_PASSWORD_FILE", password_file)
         self.chroma_path = local_path(env_str("CHROMA_PATH", "./chroma"))
         self.ollama_url = env_str("OLLAMA_URL", "http://localhost:11434").rstrip("/")
         # 3b over 1b: on the check-in questions (with the keyword pass) 1b got 3

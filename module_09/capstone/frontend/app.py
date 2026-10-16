@@ -157,8 +157,8 @@ def jobs_page():
 
     if not jobs:
         st.info("Nothing saved yet. Add a posting below, or load the sample postings.")
-    elif len(jobs) == 100:
-        st.caption("Showing your 100 newest postings.")
+    elif len(jobs) >= api_client.MAX_POSTINGS:
+        st.caption(f"Showing your {api_client.MAX_POSTINGS:,} newest postings.")
     for job in jobs:
         with st.container(border=True):
             left, right = st.columns([5, 1])
@@ -167,13 +167,16 @@ def jobs_page():
             location = plain(job["location"]) if job.get("location") else None
             left.caption(" · ".join(filter(None, [location, job["source"],
                                                   "indexed" if job["indexed"] else "not indexed"])))
-            if right.button("Delete", key=f"del_{job['id']}"):
-                try:
-                    api_client.delete_job(st.session_state.token, job["id"])
-                    st.session_state.notice = ("success", f"Deleted {plain(job['title'])}")
-                except ApiError as e:
-                    st.session_state.notice = ("error", str(e))
-                st.rerun()
+            # a second click to confirm: a misclick deleted the posting for good
+            with right.popover("Delete"):
+                st.write("Delete this posting? It can't be undone.")
+                if st.button("Yes, delete", key=f"del_{job['id']}", type="primary"):
+                    try:
+                        api_client.delete_job(st.session_state.token, job["id"])
+                        st.session_state.notice = ("success", f"Deleted {plain(job['title'])}")
+                    except ApiError as e:
+                        st.session_state.notice = ("error", str(e))
+                    st.rerun()
 
     cols = st.columns(2)
     if cols[0].button("Load sample postings", width="stretch"):

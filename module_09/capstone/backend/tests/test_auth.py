@@ -9,6 +9,7 @@ To run them against Postgres, see TEST_DATABASE_URL in conftest.py.
 
 import os
 import time
+import uuid
 
 import jwt
 import pytest
@@ -117,3 +118,54 @@ def test_token_issued_before_the_account_existed_is_401(client):
     assert client.get("/me", headers=bearer(sub=str(user_id), exp=exp)).status_code == 401
     # the same claims issued now are accepted
     assert client.get("/me", headers=bearer(sub=str(user_id), iat=int(time.time()), exp=exp)).status_code == 200
+
+
+def login(client, username: str, password: str):
+    return client.post("/auth/token", data={"username": username, "password": password})
+
+
+def test_five_wrong_passwords_block_the_username_for_15_minutes(client, monkeypatch):
+    name = f"guess_{uuid.uuid4().hex[:8]}"
+    client.post("/auth/register", json={"username": name, "password": "the-right-one"})
+    for _ in range(5):
+        assert login(client, name, "a-wrong-one").status_code == 401
+
+    blocked = login(client, name, "a-wrong-one")
+    assert blocked.status_code == 429
+    assert blocked.json()["detail"] == "Too many failed sign-ins for this username. Try again in 15 minutes."
+    assert 0 < int(blocked.headers["Retry-After"]) <= 15 * 60
+    # the right password is refused too, or the block would only slow guessing down. Any case
+    assert login(client, name.upper(), "the-right-one").status_code == 429
+    # nobody else is affected
+    other = f"bystander_{uuid.uuid4().hex[:8]}"
+    client.post("/auth/register", json={"username": other, "password": "correct-horse"})
+    assert login(client, other, "correct-horse").status_code == 200
+
+    # the attempts while blocked didn't count, so it opens 15 minutes after the first failure
+    later = auth.clock() + 15 * 60 + 1
+    monkeypatch.setattr(auth, "clock", lambda: later)
+    assert login(client, name, "the-right-one").status_code == 200
+
+
+def test_unknown_usernames_are_blocked_the_same_way(client):
+    # otherwise a 429 for some names and not others would show which ones exist
+    name = f"nobody_{uuid.uuid4().hex[:8]}"
+    assert [login(client, name, "whatever1").status_code for _ in range(6)] == [401] * 5 + [429]
+
+
+def test_signing_in_clears_the_count(client):
+    name = f"forgetful_{uuid.uuid4().hex[:8]}"
+    client.post("/auth/register", json={"username": name, "password": "the-right-one"})
+    for _ in range(4):
+        login(client, name, "a-wrong-one")
+    assert login(client, name, "the-right-one").status_code == 200
+    assert [login(client, name, "a-wrong-one").status_code for _ in range(4)] == [401] * 4
+
+
+def test_tracked_usernames_are_pruned(monkeypatch):
+    # random usernames can't grow the table forever: expired ones go once it's full
+    monkeypatch.setattr(auth, "failed_logins", {f"old_{i}": [0.0] for i in range(3)})
+    monkeypatch.setattr(auth, "FAILED_LOGIN_KEYS", 3)
+    monkeypatch.setattr(auth, "clock", lambda: auth.FAILED_LOGIN_WINDOW + 1.0)
+    auth.record_failed_login("new_one")
+    assert list(auth.failed_logins) == ["new_one"]

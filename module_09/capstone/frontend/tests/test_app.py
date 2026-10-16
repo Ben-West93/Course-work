@@ -15,6 +15,7 @@ import pytest
 import requests
 from streamlit.testing.v1 import AppTest
 
+import api_client
 from api_client import BACKEND_URL
 from tests.conftest import HEALTH, JOB, Reply
 
@@ -256,10 +257,34 @@ def test_failed_save_keeps_the_form_and_success_clears_it(fake_api):
     assert at.text_input(key="job_title").value == "" and at.text_area(key="job_text").value == ""
 
 
-def test_hundred_posting_limit_is_shown(fake_api):
-    fake_api[("GET", "/jobs")] = Reply(200, [dict(JOB, id=i) for i in range(100)])
+def test_postings_past_the_first_hundred_are_listed(fake_api):
+    def route(params, **_kw):
+        return Reply(200, [dict(JOB, id=i) for i in range(params["offset"], min(params["offset"] + 100, 130))])
+
+    fake_api[("GET", "/jobs")] = route
     at = jobs_page(app())
-    assert any("100 newest" in c.value for c in at.caption)
+    # one Yes, delete button per posting, so all 130 are on the page
+    assert sum(b.label == "Yes, delete" for b in at.button) == 130
+    assert not any("newest" in c.value for c in at.caption)
+
+
+def test_posting_cap_is_shown(fake_api, monkeypatch):
+    monkeypatch.setattr(api_client, "MAX_POSTINGS", 150)
+    fake_api[("GET", "/jobs")] = lambda params, **_kw: Reply(200, [dict(JOB, id=params["offset"] + i) for i in range(100)])
+    at = jobs_page(app())
+    assert any("Showing your 150 newest postings" in c.value for c in at.caption)
+
+
+def test_deleting_takes_a_second_click(fake_api):
+    deleted = []
+    fake_api[("DELETE", "/jobs/1")] = lambda **_kw: deleted.append(1) or Reply(204)
+    at = jobs_page(app())
+    # Delete only opens the question, nothing is sent until Yes, delete
+    assert "Delete this posting? It can't be undone." in all_text(at)
+    assert not any(b.label == "Delete" for b in at.button) and deleted == []
+    next(b for b in at.button if b.label == "Yes, delete").click().run()
+    assert deleted == [1]
+    assert any("Deleted Dev" in s.value for s in at.success)
 
 
 def test_postings_failing_to_load_is_an_error_on_both_pages(fake_api):
@@ -274,7 +299,7 @@ def test_postings_failing_to_load_is_an_error_on_both_pages(fake_api):
 
 
 @pytest.mark.parametrize("route, label", [
-    (("DELETE", "/jobs/1"), "Delete"),
+    (("DELETE", "/jobs/1"), "Yes, delete"),
     (("POST", "/jobs/samples"), "Load sample postings"),
     (("POST", "/jobs/reindex"), "Rebuild search index"),
 ])
@@ -301,7 +326,7 @@ def test_saving_when_the_api_times_out_keeps_the_form(fake_api):
 def test_expired_session_during_an_action_goes_back_to_the_login_page(fake_api):
     fake_api[("DELETE", "/jobs/1")] = Reply(401, {"detail": "Could not validate credentials"})
     at = jobs_page(app())
-    next(b for b in at.button if b.label == "Delete").click().run()
+    next(b for b in at.button if b.label == "Yes, delete").click().run()
     assert at.session_state["token"] is None
     assert "session expired" in all_text(at).lower()
 

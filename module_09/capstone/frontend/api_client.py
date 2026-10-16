@@ -23,8 +23,20 @@ import os
 import requests
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000").rstrip("/")
-# the backend gives Ollama up to 120s, so wait a bit longer than that
-ASK_TIMEOUT = 150
+# GET /jobs returns at most 100 a request, so list_jobs pages through them
+PAGE_SIZE = 100
+# more than anyone's job search needs, and an end to the paging if it never ran out
+MAX_POSTINGS = 1000
+
+
+def ask_timeout() -> int:
+    """
+    How long to wait for /ask: OLLAMA_TIMEOUT, what the backend gives Ollama,
+    plus 30s. Compose passes the frontend the same value, and 120 is the
+    backend's default when it's unset or not a number.
+    """
+    raw = os.environ.get("OLLAMA_TIMEOUT", "").strip()
+    return (int(raw) if raw.isdigit() else 120) + 30
 
 
 class ApiError(Exception):
@@ -112,9 +124,15 @@ def register(username: str, password: str) -> dict:
 
 # ── Job postings ───────────────────────────────────────────────────────────
 
-def list_jobs(token: str, limit: int = 100) -> list[dict]:
-    """The user's newest postings, at most `limit` of them."""
-    return request("get", "/jobs", token, params={"limit": limit})
+def list_jobs(token: str) -> list[dict]:
+    """The user's postings, newest first, fetched PAGE_SIZE at a time up to MAX_POSTINGS."""
+    jobs = []
+    while len(jobs) < MAX_POSTINGS:
+        page = request("get", "/jobs", token, params={"limit": PAGE_SIZE, "offset": len(jobs)})
+        jobs.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+    return jobs[:MAX_POSTINGS]
 
 
 def create_job(token: str, posting: dict) -> dict:
@@ -145,4 +163,4 @@ def ask(question: str, token: str, job_ids: list[int] | None = None) -> dict:
     body = {"question": question}
     if job_ids:
         body["job_ids"] = job_ids
-    return request("post", "/ask", token, timeout=ASK_TIMEOUT, json=body)
+    return request("post", "/ask", token, timeout=ask_timeout(), json=body)

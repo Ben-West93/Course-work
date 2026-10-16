@@ -6,7 +6,10 @@ Routes get the logged-in user with a `user: CurrentUser` parameter.
 """
 
 import logging
+import math
 import secrets
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
@@ -70,6 +73,61 @@ def authenticate(db: Session, username: str, password: str) -> User | None:
         return None
     return user if verify_password(password, user.hashed_password) else None
 
+
+# ── Failed sign-ins ────────────────────────────────────────────────────────
+
+# after 5 wrong passwords for one username within 15 minutes, that username
+# can't sign in until the oldest of them is 15 minutes old. Attempts while it's
+# blocked aren't counted, so it always opens again. Keyed on the username, not
+# the address: everything through the UI comes from the frontend container.
+# Kept in memory, which works because the API runs one uvicorn worker, and a
+# restart clears it
+MAX_FAILED_LOGINS = 5
+FAILED_LOGIN_WINDOW = 15 * 60
+# drop usernames whose failures have all expired once this many are tracked
+FAILED_LOGIN_KEYS = 10_000
+# monotonic, so changing the system clock can't open or extend a block. Tests replace it
+clock = time.monotonic
+failed_logins: dict[str, list[float]] = {}
+failed_logins_lock = threading.Lock()
+
+
+def login_key(username: str) -> str:
+    """The username as authenticate() looks it up, capped so a huge one can't take up memory."""
+    return username.strip().lower()[:100]
+
+
+def login_retry_after(username: str) -> int:
+    """Seconds until this username can try to sign in again, 0 if it can now."""
+    key, now = login_key(username), clock()
+    with failed_logins_lock:
+        recent = [t for t in failed_logins.get(key, []) if now - t < FAILED_LOGIN_WINDOW]
+        if recent:
+            failed_logins[key] = recent
+        else:
+            failed_logins.pop(key, None)
+        if len(recent) < MAX_FAILED_LOGINS:
+            return 0
+        return math.ceil(FAILED_LOGIN_WINDOW - (now - recent[-MAX_FAILED_LOGINS]))
+
+
+def record_failed_login(username: str):
+    """Count a wrong password, or an unknown username, against that username."""
+    now = clock()
+    with failed_logins_lock:
+        if len(failed_logins) >= FAILED_LOGIN_KEYS:
+            for key in [k for k, times in failed_logins.items() if now - times[-1] >= FAILED_LOGIN_WINDOW]:
+                del failed_logins[key]
+        failed_logins.setdefault(login_key(username), []).append(now)
+
+
+def clear_failed_logins(username: str):
+    """Forget a username's failures once it signs in."""
+    with failed_logins_lock:
+        failed_logins.pop(login_key(username), None)
+
+
+# ── Tokens ─────────────────────────────────────────────────────────────────
 
 def create_access_token(user_id: int) -> str:
     """A signed JWT for the user, with `sub`, `iat` and `exp` claims."""
