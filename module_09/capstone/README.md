@@ -199,7 +199,7 @@ pull in, in `constraints.txt`.
 | API | Python 3.11, FastAPI 0.142, Uvicorn, Pydantic 2.13 |
 | Database | PostgreSQL 17, through SQLAlchemy 2.1 and psycopg 3. SQLite outside Docker and in the tests |
 | Auth | JWT tokens with PyJWT, Argon2 password hashing with pwdlib |
-| Search | ChromaDB 1.5, embedded in the backend, with all-MiniLM-L6-v2 embeddings (ONNX) |
+| Search | ChromaDB 1.5, embedded in the backend, with all-MiniLM-L6-v2 embeddings (ONNX). The closest chunks are ranked exactly with NumPy |
 | LLM | Ollama, running llama3.2:3b |
 | Frontend | Streamlit 1.64, calling the API with requests |
 | Containers | Docker and Docker Compose: six services, two of them one-shot setup steps. Both images run as a non-root user and install the versions pinned in `constraints.txt` |
@@ -337,8 +337,10 @@ these steps:
    its first word is, as long as that word has 4+ letters and isn't a common
    word like "Data" or "Global".
 4. **Retrieve** (`rag_pipeline.retrieve`), **always filtered to this user**, in two passes:
-   - **Vector search.** The question is embedded the same way as the chunks,
-     and ChromaDB returns the closest 5. An open search (no scope) drops
+   - **Vector search.** The question is embedded the same way as the chunks.
+     ChromaDB hands back this user's chunks with their vectors, and the
+     closest 5 are found by comparing the question with every one of them
+     (exact, see [Design decisions](#retrieval)). An open search (no scope) drops
      chunks further than `MAX_DISTANCE` (1.45) or more than 0.35 behind the
      closest one. If nothing is within 1.45, the question is off topic and
      the search stops there: the keyword pass can't rescue it. A scoped
@@ -348,9 +350,10 @@ these steps:
      inside a list ("plus equity") rarely made the top 5. The question's
      distinctive words are picked out (`rag_pipeline.keywords`). Stopwords like "which"
      or "jobs" don't count, and neither do saved company names, which every
-     chunk's header contains. For each word, ChromaDB finds the closest chunk
-     per posting that contains it as a whole word, in any case, plural or not.
-     Up to 5 of these are added, however far away they are.
+     chunk's header contains. For each word, ChromaDB lists this user's
+     chunks that contain it as a whole word, in any case, plural or not, and
+     the closest one per posting is kept. Up to 5 of these are added, however
+     far away they are.
    - In an open search where the keyword pass found something, a vector chunk
      that contains none of the words is dropped unless it's closer than 1.0.
      Without that, a Harbor & Pine chunk that never mentions Docker reached
@@ -436,6 +439,17 @@ Why the main settings are what they are. The measurements behind them are in
 - **Naming a company searches only its postings**, with no distance cutoff.
   Without it, "What does Cobalt Freight require?" never retrieved Cobalt's
   "Must have" section, at 1.55.
+- **The closest chunks are found exactly, not with ChromaDB's index.**
+  ChromaDB's search index is approximate. On a stack where many accounts had
+  come and gone (1,046 chunks), a search filtered to a newly created account
+  returned 0 or 1 of its 5 closest chunks, and the keyword pass found
+  neither posting that offers equity, so "Which roles offer equity?" came
+  back low. The same chunks in a freshly built index were all found. Now
+  ChromaDB only filters (this user, this word), which is exact, and
+  `rag_pipeline.search` ranks the chunks it returns by squared L2, the same
+  distance ChromaDB reports, so the cutoffs above keep their meaning. An
+  account's chunks take about 2 ms on my Mac; 5,000 chunks, the UI's 1,000-posting
+  cap, took about 80 ms.
 
 ### Guardrails
 
@@ -488,6 +502,10 @@ Known limitations:
   all got a 200, but the last one waited 23s.
 - **One API process.** Embedded ChromaDB and the in-memory sign-in throttle
   both rely on a single uvicorn worker, and a restart clears the throttle.
+- **Search time grows with an account's postings.** Every question is
+  compared with all of that account's chunks: about 2 ms for the samples,
+  about 80 ms at the 1,000-posting cap. Fine next to a 1 to 3 second answer,
+  but not for accounts far bigger than that.
 - **Anyone who knows a username can keep it locked.** The sign-in throttle
   counts per username, because everything through the UI comes from one
   address, so 5 wrong guesses every 15 minutes keep that account's owner out
@@ -680,7 +698,7 @@ uses the real model and services. Between them every stage has a check:
 | Postgres rows | `models.py` | the whole suite, on SQLite by default and on Postgres with `TEST_DATABASE_URL` | stage 4 |
 | Chunking | `rag_pipeline.chunk_posting` | 200-seed fuzz (no text lost, nothing over 500), pathological inputs, headings | stage 5 |
 | Indexing | `rag_pipeline.index_posting` | headers, no stale chunks after an edit, a failed index fixed by reindex, orphans | stage 5 |
-| Retrieval and scoping | `rag_pipeline.retrieve`, `rag_pipeline.named_postings` | `test_pipeline.py`: cutoff, window, user filter, picked postings; common-word companies | stage 6, and stage 8 checks the API got the same chunks |
+| Retrieval and scoping | `rag_pipeline.retrieve`, `rag_pipeline.search`, `rag_pipeline.named_postings` | `test_pipeline.py`: cutoff, window, user filter, picked postings; common-word companies; exact ranking with the same chunks and distances as ChromaDB's own search on a fresh index, and the equity question still answered when ChromaDB's index finds nothing (fails on the code before the fix) | stage 6, and stage 8 checks the API got the same chunks |
 | Keyword pass | `rag_pipeline.keywords`, `rag_pipeline.keyword_pattern`, `rag_pipeline.retrieve` | `test_pipeline.py`: which words count, whole-word and plural matching, cap, dedupe, dropping far chunks without the word, no keyword pass for an off-topic question; on the real samples, the equity, remote, Docker and vector-database questions reach every posting that has the fact (all four fail with the pass switched off) | stage 9 |
 | Prompt | `rag_pipeline.build_prompt` | excerpts only in the user message, the injection reminder between them and the question, the question last | stage 7 |
 | Generation | `rag_pipeline.generate_answer` | `test_pipeline.py`: the exact request sent; `test_edge_cases.py`: 10 Ollama failures, each a 503 with a reason; truncation | stage 8, real model |
@@ -700,9 +718,9 @@ checks also need `pip install ruff==0.16.10`. The image build needs only Docker.
 
 | What | Command | Count |
 |---|---|---|
-| Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 438 |
-| Backend, inside the image with no network | `docker build --target test ./backend` | 438 |
-| Backend against Postgres (stack up) | the three commands below | 438 |
+| Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 441 |
+| Backend, inside the image with no network | `docker build --target test ./backend` | 441 |
+| Backend against Postgres (stack up) | the three commands below | 441 |
 | Frontend (AppTest and the API client, fake API) | `cd frontend && pytest -q` | 114 |
 | Whole flow against the live stack | `docker-compose exec backend python walkthrough.py` | 42 checks |
 | Lint | `ruff check backend/ frontend/` | |

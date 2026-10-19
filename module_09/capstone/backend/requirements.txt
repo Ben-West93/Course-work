@@ -13,6 +13,8 @@ pwdlib[argon2]==0.3.1
 chromadb==1.5.9
 # chromadb's embedding runtime. Imported directly too, to switch its telemetry off
 onnxruntime==1.31.0
+# ranks the user's chunks against the question (rag_pipeline.search), already a chromadb dependency
+numpy==2.4.6
 requests==2.34.2
 # chromadb's HTTP client, pinned so an upgrade can't sneak in through chromadb
 httpx==0.28.1

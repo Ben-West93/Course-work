@@ -13,18 +13,23 @@ Answering a question (POST /ask):
     -> generate_answer -> compute_confidence
 
 Embeddings come from ChromaDB's default all-MiniLM-L6-v2, run locally (it's
-baked into the Docker image). Ollama is only used to write the answer, so
-saving and searching postings work while it's down.
+baked into the Docker image). ChromaDB stores the chunks and their vectors
+and does the filtering, but the closest chunks are ranked here, exactly (see
+search). Ollama is only used to write the answer, so saving and searching
+postings work while it's down.
 """
 
 import logging
 import os
 import re
 import time
+from functools import lru_cache
 
 import chromadb
+import numpy as np
 import onnxruntime
 import requests
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 from fastapi import HTTPException
 
 from config import BASE_DIR, settings
@@ -44,8 +49,12 @@ if settings.debug:
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 COLLECTION_NAME = f"postings_{EMBEDDING_MODEL}"
 
+# ChromaDB's default model, held here so questions are embedded with exactly
+# the model that embedded the chunks
+embed = DefaultEmbeddingFunction()
+
 chroma_client = chromadb.PersistentClient(path=settings.chroma_path)
-collection = chroma_client.get_or_create_collection(COLLECTION_NAME)
+collection = chroma_client.get_or_create_collection(COLLECTION_NAME, embedding_function=embed)
 
 
 # ── 1. Chunking ────────────────────────────────────────────────────────────
@@ -428,22 +437,46 @@ def keyword_pattern(word: str) -> str:
     return rf"(?i)(^|[^a-z0-9]){re.escape(stem)}(s|es)?($|[^a-z0-9])"
 
 
+@lru_cache(maxsize=64)
+def embed_question(question: str) -> np.ndarray:
+    """The question's vector, from the model that embedded the chunks. Cached: retrieve asks for it up to 5 times."""
+    return np.asarray(embed([question])[0], dtype=np.float32)
+
+
 def search(question: str, where: dict, n_results: int, where_document: dict | None = None) -> list[dict]:
-    """One ChromaDB query, closest first, as chunk dicts."""
+    """
+    The n_results chunks closest to the question among those that match the
+    filters, closest first, as chunk dicts.
+
+    Exact: ChromaDB filters the chunks and hands back their stored vectors,
+    and each one is compared with the question here. ChromaDB's own query
+    searches an approximate index instead. On a stack where many accounts
+    had come and gone (1,046 chunks), a query filtered to a new account
+    returned 0 or 1 of its 5 closest chunks and neither of the 2 that say
+    "equity", so "Which roles offer equity?" came back low. One user's
+    chunks number in the hundreds, and comparing 34 took under 2 ms.
+    """
     extra = {"where_document": where_document} if where_document else {}
-    results = collection.query(query_texts=[question], n_results=n_results, where=where, **extra)
+    found = collection.get(where=where, include=["documents", "metadatas", "embeddings"], **extra)
+    if not found["ids"]:
+        return []
+    vectors = np.asarray(found["embeddings"], dtype=np.float32)
+    # squared L2, the distance ChromaDB's l2 space reports, so MAX_DISTANCE,
+    # RELATIVE_WINDOW and HIGH_BELOW keep the meaning they were measured with
+    distances = ((vectors - embed_question(question)) ** 2).sum(axis=1)
     chunks = []
-    for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
+    for i in np.argsort(distances, kind="stable")[:n_results]:
         # the document is "header\n\nchunk", the excerpt shown to the user is the chunk
-        header, _, excerpt = (doc or "").partition("\n\n")
+        header, _, excerpt = (found["documents"][i] or "").partition("\n\n")
         if excerpt.strip():
+            meta = found["metadatas"][i]
             chunks.append(
                 {
                     "job_id": meta["job_id"],
                     "chunk": meta["chunk"],
                     "header": header,
                     "excerpt": excerpt.strip(),
-                    "distance": round(dist, 4),
+                    "distance": round(float(distances[i]), 4),
                 }
             )
     return chunks
