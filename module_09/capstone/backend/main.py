@@ -215,6 +215,7 @@ async def limit_body_size(request: Request, call_next):
 
 # ── Health ─────────────────────────────────────────────────────────────────
 
+
 @app.get("/health", response_model=HealthResponse, responses={503: {"description": "The database is down."}})
 def health(response: Response):
     """
@@ -253,8 +254,13 @@ def health(response: Response):
 
 # ── Auth ───────────────────────────────────────────────────────────────────
 
-@app.post("/auth/register", response_model=UserOut, status_code=201,
-          responses={409: {"description": "Username already taken."}})
+
+@app.post(
+    "/auth/register",
+    response_model=UserOut,
+    status_code=201,
+    responses={409: {"description": "Username already taken."}},
+)
 def register(req: UserCreate, db: DbSession):
     """Create an account. The username is stored lowercase, and one that's taken is a 409."""
     user = User(username=req.username, hashed_password=auth.hash_password(req.password))
@@ -268,10 +274,14 @@ def register(req: UserCreate, db: DbSession):
     return user
 
 
-@app.post("/auth/token", response_model=Token, responses={
-    401: {"description": "Wrong username or password."},
-    429: {"description": "Too many wrong passwords for this username in the last 15 minutes."},
-})
+@app.post(
+    "/auth/token",
+    response_model=Token,
+    responses={
+        401: {"description": "Wrong username or password."},
+        429: {"description": "Too many wrong passwords for this username in the last 15 minutes."},
+    },
+)
 def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession):
     """
     Log in with the form fields `username` and `password`, which is what
@@ -288,7 +298,7 @@ def login(form: Annotated[OAuth2PasswordRequestForm, Depends()], db: DbSession):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=f"Too many failed sign-ins for this username. Try again in {minutes} "
-                   f"minute{'s' if minutes != 1 else ''}.",
+            f"minute{'s' if minutes != 1 else ''}.",
             headers={"Retry-After": str(retry_after)},
         )
     user = auth.authenticate(db, form.username, form.password)
@@ -325,17 +335,28 @@ def delete_me(user: CurrentUser, db: DbSession):
 
 # ── Job postings ───────────────────────────────────────────────────────────
 
+
 @app.get("/jobs", response_model=list[JobSummary])
-def list_jobs(user: CurrentUser, db: DbSession, limit: Annotated[int, Query(ge=1, le=100)] = 50,
-              offset: Annotated[int, Query(ge=0, le=MAX_ID)] = 0):
+def list_jobs(
+    user: CurrentUser,
+    db: DbSession,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0, le=MAX_ID)] = 0,
+):
     """The user's postings, newest first, without their text."""
-    stmt = (select(JobPosting).where(JobPosting.user_id == user.id)
-            .order_by(JobPosting.created_at.desc(), JobPosting.id.desc()).limit(limit).offset(offset))
+    stmt = (
+        select(JobPosting)
+        .where(JobPosting.user_id == user.id)
+        .order_by(JobPosting.created_at.desc(), JobPosting.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     return db.scalars(stmt).all()
 
 
-@app.post("/jobs", response_model=JobOut, status_code=201,
-          responses={409: {"description": "This posting is already saved."}})
+@app.post(
+    "/jobs", response_model=JobOut, status_code=201, responses={409: {"description": "This posting is already saved."}}
+)
 def create_job(req: JobCreate, user: CurrentUser, db: DbSession):
     """
     Save a posting, then chunk and index it for search. If indexing fails the
@@ -422,9 +443,10 @@ def get_job(job_id: JobId, user: CurrentUser, db: DbSession):
     return get_owned_job(job_id, user, db)
 
 
-@app.patch("/jobs/{job_id}", response_model=JobOut, responses={409: {"description": "Same text as another saved posting."}})
-def update_job(job_id: JobId, req: JobUpdate, user: CurrentUser,
-               db: DbSession):
+@app.patch(
+    "/jobs/{job_id}", response_model=JobOut, responses={409: {"description": "Same text as another saved posting."}}
+)
+def update_job(job_id: JobId, req: JobUpdate, user: CurrentUser, db: DbSession):
     """
     Edit a posting. Fields left out keep their value. A change to the text,
     title, company or location re-indexes it.
@@ -464,9 +486,14 @@ def delete_job(job_id: JobId, user: CurrentUser, db: DbSession):
 
 # ── Ask ────────────────────────────────────────────────────────────────────
 
-@app.post("/ask", response_model=AskResponse,
-          responses={503: {"description": "Ollama is down, timed out or doesn't have the model, "
-                                          "or ChromaDB can't be searched."}})
+
+@app.post(
+    "/ask",
+    response_model=AskResponse,
+    responses={
+        503: {"description": "Ollama is down, timed out or doesn't have the model, or ChromaDB can't be searched."}
+    },
+)
 def ask(req: AskRequest, user: CurrentUser, db: DbSession):
     """
     1. load the user's postings (Postgres is the source of truth)
@@ -490,7 +517,9 @@ def ask(req: AskRequest, user: CurrentUser, db: DbSession):
     # "what does Cobalt Freight want?" only searches Cobalt's postings
     job_ids = req.job_ids or rag_pipeline.named_postings(req.question, jobs.values())
     try:
-        found = rag_pipeline.retrieve(user.id, req.question, job_ids, req.n_results, rag_pipeline.company_words(jobs.values()))
+        found = rag_pipeline.retrieve(
+            user.id, req.question, job_ids, req.n_results, rag_pipeline.company_words(jobs.values())
+        )
     except Exception as e:
         rag_pipeline.log.warning("ChromaDB search failed: %r", e)
         raise HTTPException(status_code=503, detail="ChromaDB search failed") from e
@@ -502,11 +531,19 @@ def ask(req: AskRequest, user: CurrentUser, db: DbSession):
 
     answer, truncated = rag_pipeline.generate_answer(rag_pipeline.build_prompt(req.question, chunks))
     sources = [
-        Source(n=i, job_id=c["job_id"], title=jobs[c["job_id"]].title, company=jobs[c["job_id"]].company,
-               chunk=c["chunk"], excerpt=c["excerpt"], distance=c["distance"])
+        Source(
+            n=i,
+            job_id=c["job_id"],
+            title=jobs[c["job_id"]].title,
+            company=jobs[c["job_id"]].company,
+            chunk=c["chunk"],
+            excerpt=c["excerpt"],
+            distance=c["distance"],
+        )
         for i, c in enumerate(chunks, start=1)
     ]
     # an answer cut off at the token cap is usually the model repeating itself
     confidence = "low" if truncated else rag_pipeline.compute_confidence(chunks, answer)
-    return AskResponse(answer=answer, confidence=confidence, sources=sources, model=settings.model_name,
-                       truncated=truncated)
+    return AskResponse(
+        answer=answer, confidence=confidence, sources=sources, model=settings.model_name, truncated=truncated
+    )

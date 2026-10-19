@@ -25,8 +25,10 @@ atexit.register(shutil.rmtree, TEST_DIR, ignore_errors=True)
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
 if TEST_DATABASE_URL and "test" not in TEST_DATABASE_URL.rsplit("/", 1)[-1]:
-    raise SystemExit(f"TEST_DATABASE_URL must name a test database (e.g. .../jobfit_test), "
-                     f"the suite drops all its tables. Got {TEST_DATABASE_URL.rsplit('@', 1)[-1]!r}")
+    raise SystemExit(
+        f"TEST_DATABASE_URL must name a test database (e.g. .../jobfit_test), "
+        f"the suite drops all its tables. Got {TEST_DATABASE_URL.rsplit('@', 1)[-1]!r}"
+    )
 
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL or f"sqlite:///{os.path.join(TEST_DIR, 'test.db')}"
 os.environ["CHROMA_PATH"] = os.path.join(TEST_DIR, "chroma")
@@ -62,6 +64,7 @@ POSTING = {
 
 @pytest.fixture(scope="session")
 def client():
+    """The API with its startup run, on a database emptied first. One for the whole session."""
     # a reused Postgres test database starts empty every run
     import models  # noqa: F401
 
@@ -83,6 +86,7 @@ def signup(client) -> dict:
 
 @pytest.fixture
 def headers(client):
+    """Auth headers for a fresh user."""
     return signup(client)
 
 

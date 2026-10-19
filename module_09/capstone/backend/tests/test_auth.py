@@ -53,14 +53,18 @@ def test_passwords_are_stored_hashed():
     assert not auth.verify_password("Correct-horse", hashed)
 
 
-@pytest.mark.parametrize("auth_header", [
-    None,
-    "Bearer not-a-jwt",
-    # signed with a different secret
-    "Bearer " + jwt.encode({"sub": "1", "exp": 4102444800}, "a-different-secret-of-at-least-32-bytes", algorithm="HS256"),
-    # right secret, already expired
-    "Bearer " + jwt.encode({"sub": "1", "exp": 1}, os.environ["JWT_SECRET_KEY"], algorithm="HS256"),
-])
+@pytest.mark.parametrize(
+    "auth_header",
+    [
+        None,
+        "Bearer not-a-jwt",
+        # signed with a different secret
+        "Bearer "
+        + jwt.encode({"sub": "1", "exp": 4102444800}, "a-different-secret-of-at-least-32-bytes", algorithm="HS256"),
+        # right secret, already expired
+        "Bearer " + jwt.encode({"sub": "1", "exp": 1}, os.environ["JWT_SECRET_KEY"], algorithm="HS256"),
+    ],
+)
 def test_protected_routes_reject_bad_tokens(client, auth_header):
     headers = {"Authorization": auth_header} if auth_header else {}
     for method, path in [("get", "/jobs"), ("post", "/ask"), ("get", "/me")]:
@@ -122,6 +126,7 @@ def test_token_issued_before_the_account_existed_is_401(client):
 
 
 def login(client, username: str, password: str):
+    """POST /auth/token with the form fields, the way Swagger and the UI send them."""
     return client.post("/auth/token", data={"username": username, "password": password})
 
 

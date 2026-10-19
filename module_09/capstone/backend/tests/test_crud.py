@@ -38,8 +38,12 @@ def test_posting_validation(client, headers):
 def test_list_and_get_postings(client):
     headers = signup(client)
     assert client.get("/jobs", headers=headers).json() == []
-    ids = [client.post("/jobs", headers=headers, json=dict(POSTING, title=f"Role {i}", text=f"{POSTING['text']}\nref {i}"))
-           .json()["id"] for i in range(3)]
+    ids = [
+        client.post(
+            "/jobs", headers=headers, json=dict(POSTING, title=f"Role {i}", text=f"{POSTING['text']}\nref {i}")
+        ).json()["id"]
+        for i in range(3)
+    ]
 
     listed = client.get("/jobs", headers=headers).json()
     # newest first, and the list leaves the full text out

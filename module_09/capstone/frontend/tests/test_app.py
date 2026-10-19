@@ -24,6 +24,7 @@ HOSTILE_TITLE = "![x](http://evil.example/t.png) $90k-$110k *Lead*"
 
 
 def app(signed_in: bool = True) -> AppTest:
+    """app.py run once against the fake API, signed in unless told otherwise."""
     at = AppTest.from_file(APP, default_timeout=10)
     if signed_in:
         at.session_state["token"] = "token"
@@ -32,11 +33,13 @@ def app(signed_in: bool = True) -> AppTest:
 
 
 def ask(at: AppTest, question: str) -> dict:
+    """Send a question from the chat box. Returns the reply it added to the chat."""
     at.chat_input[0].set_value(question).run()
     return at.session_state["chat"][-1]
 
 
 def all_text(at: AppTest) -> str:
+    """Every message, caption and title on the page and in the sidebar, as one string."""
     parts = []
     for root in (at, at.sidebar):
         for kind in ("markdown", "error", "warning", "info", "success", "caption", "title"):
@@ -45,6 +48,7 @@ def all_text(at: AppTest) -> str:
 
 
 # ── Connection and session ─────────────────────────────────────────────────
+
 
 def test_backend_down_is_an_error_not_a_crash(fake_api):
     fake_api[("GET", "/health")] = requests.exceptions.ConnectionError()
@@ -86,7 +90,9 @@ def test_api_going_away_during_sign_in_is_an_error_not_a_crash(fake_api, form, f
 
 
 def test_account_created_but_sign_in_failed_says_so(fake_api):
-    fake_api[("POST", "/auth/register")] = Reply(201, {"id": 1, "username": "someone", "created_at": "2026-10-13T00:00:00Z"})
+    fake_api[("POST", "/auth/register")] = Reply(
+        201, {"id": 1, "username": "someone", "created_at": "2026-10-13T00:00:00Z"}
+    )
     fake_api[("POST", "/auth/token")] = Reply(503, {"detail": "Database unavailable"})
     at = app(signed_in=False)
     at.text_input[2].set_value("someone")
@@ -114,17 +120,32 @@ def test_model_still_downloading_is_shown(fake_api):
 
 # ── Ask page: the full flow from question to rendered answer ──────────────
 
+
 def test_question_to_rendered_answer(fake_api):
     sent = {}
 
     def answer(json=None, **_kw):
         sent.update(json)
-        return Reply(200, {
-            "answer": "The internship pays $32 per hour [1].", "confidence": "high", "truncated": False,
-            "model": "llama3.2:3b",
-            "sources": [{"n": 1, "job_id": 1, "title": "Dev", "company": "Same Co", "chunk": 4,
-                         "excerpt": "## Pay\n\n$32 per hour, 40 hours a week.", "distance": 0.66}],
-        })
+        return Reply(
+            200,
+            {
+                "answer": "The internship pays $32 per hour [1].",
+                "confidence": "high",
+                "truncated": False,
+                "model": "llama3.2:3b",
+                "sources": [
+                    {
+                        "n": 1,
+                        "job_id": 1,
+                        "title": "Dev",
+                        "company": "Same Co",
+                        "chunk": 4,
+                        "excerpt": "## Pay\n\n$32 per hour, 40 hours a week.",
+                        "distance": 0.66,
+                    }
+                ],
+            },
+        )
 
     fake_api[("POST", "/ask")] = answer
     at = app()
@@ -159,16 +180,22 @@ def test_picked_postings_are_sent_as_job_ids(fake_api):
     assert seen["job_ids"] == [2]
 
 
-@pytest.mark.parametrize("reply, kind, text", [
-    (requests.exceptions.ConnectionError(), "error", "Lost the connection"),
-    (requests.exceptions.ReadTimeout(), "error", "The model may still be loading"),
-    (Reply(200, None, "<html>proxy</html>"), "error", "wasn't JSON"),
-    (Reply(422, {"detail": [{"loc": ["body", "question"], "msg": "String should have at least 3 characters"}]}),
-     "warning", "question: String should have at least 3 characters"),
-    (Reply(503, {"detail": "Ollama returned 404 for model llama3.2:3b"}), "error", "ollama-pull"),
-    (Reply(503, {"detail": "Ollama unavailable"}), "error", "docker-compose ps ollama"),
-    (Reply(503, {"detail": "Database unavailable"}), "error", "docker-compose ps postgres"),
-])
+@pytest.mark.parametrize(
+    "reply, kind, text",
+    [
+        (requests.exceptions.ConnectionError(), "error", "Lost the connection"),
+        (requests.exceptions.ReadTimeout(), "error", "The model may still be loading"),
+        (Reply(200, None, "<html>proxy</html>"), "error", "wasn't JSON"),
+        (
+            Reply(422, {"detail": [{"loc": ["body", "question"], "msg": "String should have at least 3 characters"}]}),
+            "warning",
+            "question: String should have at least 3 characters",
+        ),
+        (Reply(503, {"detail": "Ollama returned 404 for model llama3.2:3b"}), "error", "ollama-pull"),
+        (Reply(503, {"detail": "Ollama unavailable"}), "error", "docker-compose ps ollama"),
+        (Reply(503, {"detail": "Database unavailable"}), "error", "docker-compose ps postgres"),
+    ],
+)
 def test_every_failure_becomes_a_reply_in_the_chat(fake_api, reply, kind, text):
     fake_api[("POST", "/ask")] = reply
     at = app()
@@ -180,9 +207,16 @@ def test_every_failure_becomes_a_reply_in_the_chat(fake_api, reply, kind, text):
 
 
 def test_links_in_answers_are_plain_text(fake_api):
-    fake_api[("POST", "/ask")] = Reply(200, {
-        "answer": "Visit http://shady.example or www.shady.example, or [apply here](https://shady.example/a).",
-        "confidence": "low", "truncated": False, "model": "m", "sources": []})
+    fake_api[("POST", "/ask")] = Reply(
+        200,
+        {
+            "answer": "Visit http://shady.example or www.shady.example, or [apply here](https://shady.example/a).",
+            "confidence": "low",
+            "truncated": False,
+            "model": "m",
+            "sources": [],
+        },
+    )
     at = app()
     ask(at, "What does Shady Corp pay?")
     rendered = " ".join(m.value for m in at.markdown)
@@ -192,10 +226,26 @@ def test_links_in_answers_are_plain_text(fake_api):
 
 
 def test_hostile_answer_and_truncation(fake_api):
-    fake_api[("POST", "/ask")] = Reply(200, {
-        "answer": "![x](http://evil.example/a.png) pays $90k [1] and", "confidence": "low", "truncated": True,
-        "model": "m", "sources": [{"n": 1, "job_id": 1, "title": "*Dev*", "company": "Same Co", "chunk": 0,
-                                   "excerpt": "$90k", "distance": 0.5}]})
+    fake_api[("POST", "/ask")] = Reply(
+        200,
+        {
+            "answer": "![x](http://evil.example/a.png) pays $90k [1] and",
+            "confidence": "low",
+            "truncated": True,
+            "model": "m",
+            "sources": [
+                {
+                    "n": 1,
+                    "job_id": 1,
+                    "title": "*Dev*",
+                    "company": "Same Co",
+                    "chunk": 0,
+                    "excerpt": "$90k",
+                    "distance": 0.5,
+                }
+            ],
+        },
+    )
     at = app()
     ask(at, "What does it pay?")
     rendered = " ".join(m.value for m in at.markdown)
@@ -206,7 +256,9 @@ def test_hostile_answer_and_truncation(fake_api):
 
 # ── Jobs page ──────────────────────────────────────────────────────────────
 
+
 def jobs_page(at: AppTest) -> AppTest:
+    """Switch to the Jobs page in the sidebar."""
     return at.sidebar.radio[0].set_value("Jobs").run()
 
 
@@ -234,7 +286,9 @@ def test_failed_save_keeps_the_form_and_success_clears_it(fake_api):
 
     def save(**_kw):
         if state["status"] == 422:
-            return Reply(422, {"detail": [{"loc": ["body", "text"], "msg": "String should have at least 200 characters"}]})
+            return Reply(
+                422, {"detail": [{"loc": ["body", "text"], "msg": "String should have at least 200 characters"}]}
+            )
         return Reply(201, {"id": 9, "title": HOSTILE_TITLE, "company": "C++ Labs", "indexed": True})
 
     fake_api[("POST", "/jobs")] = save
@@ -255,6 +309,40 @@ def test_failed_save_keeps_the_form_and_success_clears_it(fake_api):
     # the notice escapes the title too, it used to load the image
     assert "\\!\\[x\\]" in notice and "\\$90k" in notice
     assert at.text_input(key="job_title").value == "" and at.text_area(key="job_text").value == ""
+
+
+def test_a_saved_upload_leaves_an_empty_upload_box(fake_api):
+    # the uploader used to keep the saved file, so the text box stayed locked
+    # and the next posting sent the same file again (a 409)
+    sent = []
+    fake_api[("POST", "/jobs")] = lambda json=None, **_kw: (
+        sent.append(json) or Reply(201, {"id": 9, "title": "Dev", "company": "Kestrel Robotics", "indexed": True})
+    )
+    at = jobs_page(app())
+    at.file_uploader[0].set_value(("posting.txt", b"Kestrel Robotics is hiring. " * 20, "text/plain")).run()
+    assert at.text_area(key="job_text").proto.disabled
+    at.text_input(key="job_title").set_value("Dev")
+    at.text_input(key="job_company").set_value("Kestrel Robotics")
+    next(b for b in at.button if b.label == "Save posting").click().run()
+
+    assert sent[0]["source"] == "upload" and sent[0]["text"].startswith("Kestrel Robotics is hiring.")
+    assert at.file_uploader[0].value is None
+    assert not at.text_area(key="job_text").proto.disabled
+
+
+def test_jobs_page_counts_postings_companies_and_indexed(fake_api):
+    fake_api[("GET", "/jobs")] = Reply(
+        200, [JOB, dict(JOB, id=2, company="same co"), dict(JOB, id=3, company="Other Co", indexed=False)]
+    )
+    at = jobs_page(app())
+    assert [(m.label, m.value) for m in at.metric] == [
+        ("Postings", "3"),
+        ("Companies", "2"),
+        ("Indexed for search", "2 of 3"),
+    ]
+    # nothing saved: the "Nothing saved yet" note instead of three zeros
+    fake_api[("GET", "/jobs")] = Reply(200, [])
+    assert not jobs_page(app()).metric
 
 
 def test_postings_past_the_first_hundred_are_listed(fake_api):
@@ -282,7 +370,9 @@ def test_a_posting_repeated_across_pages_is_shown_once(fake_api):
 
 def test_posting_cap_is_shown(fake_api, monkeypatch):
     monkeypatch.setattr(api_client, "MAX_POSTINGS", 150)
-    fake_api[("GET", "/jobs")] = lambda params, **_kw: Reply(200, [dict(JOB, id=params["offset"] + i) for i in range(100)])
+    fake_api[("GET", "/jobs")] = lambda params, **_kw: Reply(
+        200, [dict(JOB, id=params["offset"] + i) for i in range(100)]
+    )
     at = jobs_page(app())
     assert any("Showing your 150 newest postings" in c.value for c in at.caption)
 
@@ -310,11 +400,14 @@ def test_postings_failing_to_load_is_an_error_on_both_pages(fake_api):
     assert not at.exception
 
 
-@pytest.mark.parametrize("route, label", [
-    (("DELETE", "/jobs/1"), "Yes, delete"),
-    (("POST", "/jobs/samples"), "Load sample postings"),
-    (("POST", "/jobs/reindex"), "Rebuild search index"),
-])
+@pytest.mark.parametrize(
+    "route, label",
+    [
+        (("DELETE", "/jobs/1"), "Yes, delete"),
+        (("POST", "/jobs/samples"), "Load sample postings"),
+        (("POST", "/jobs/reindex"), "Rebuild search index"),
+    ],
+)
 def test_jobs_page_actions_with_the_api_gone_show_an_error(fake_api, route, label):
     fake_api[route] = requests.exceptions.ConnectionError()
     at = jobs_page(app())
@@ -346,8 +439,11 @@ def test_expired_session_during_an_action_goes_back_to_the_login_page(fake_api):
 def test_app_makes_no_http_calls_of_its_own():
     # every call goes through api_client.py, as the course starter asks
     tree = ast.parse(Path(APP).read_text())
-    imported = {alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import)
-                for alias in node.names}
-    imported |= {node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+    imported = {
+        alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
+    }
+    imported |= {
+        node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module
+    }
     assert "api_client" in imported
     assert not imported & {"requests", "httpx", "urllib", "urllib3", "http", "aiohttp"}

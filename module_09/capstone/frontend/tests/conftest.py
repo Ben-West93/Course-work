@@ -11,17 +11,27 @@ import json
 import pytest
 import requests
 
-HEALTH = {"status": "ok", "database": "ok", "chroma": "ok", "ollama": "connected", "model_ready": True,
-          "model": "llama3.2:3b"}
+HEALTH = {
+    "status": "ok",
+    "database": "ok",
+    "chroma": "ok",
+    "ollama": "connected",
+    "model_ready": True,
+    "model": "llama3.2:3b",
+}
 JOB = {"id": 1, "title": "Dev", "company": "Same Co", "location": None, "source": "pasted", "indexed": True}
 
 
 class Reply:
+    """A stand-in for requests.Response: a status, a JSON body and its text."""
+
     def __init__(self, status_code=200, body=None, text=None):
+        """`body` is what json() returns, None for a reply that isn't JSON. `text` defaults to the body as JSON."""
         self.status_code, self._body = status_code, body
         self.text = text if text is not None else json.dumps(body)
 
     def json(self):
+        """The body, or a ValueError like requests raises when it isn't JSON."""
         if self._body is None:
             raise ValueError("not json")
         return self._body

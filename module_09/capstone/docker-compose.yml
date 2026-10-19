@@ -95,7 +95,7 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
-    # JWT_*, MODEL_NAME, MAX_DISTANCE, DEBUG. Optional, a fresh clone
+    # JWT_*, MODEL_NAME, MAX_DISTANCE, OLLAMA_TIMEOUT, DEBUG. Optional, a fresh clone
     # without a .env starts on the defaults
     env_file:
       - path: .env

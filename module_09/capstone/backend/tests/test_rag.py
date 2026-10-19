@@ -101,12 +101,15 @@ def test_named_company_limits_the_search():
     assert rag_pipeline.named_postings("Which AI jobs are remote?", jobs) is None
 
 
-@pytest.mark.parametrize("answer, expected", [
-    ("Python is required [1].", "high"),
-    ("Python is required.", "low"),
-    ("Python is required [7].", "low"),
-    ("The saved postings don't have enough information to answer that.", "low"),
-])
+@pytest.mark.parametrize(
+    "answer, expected",
+    [
+        ("Python is required [1].", "high"),
+        ("Python is required.", "low"),
+        ("Python is required [7].", "low"),
+        ("The saved postings don't have enough information to answer that.", "low"),
+    ],
+)
 def test_confidence(answer, expected):
     chunks = [{"distance": 0.5}, {"distance": 0.9}]
     assert rag_pipeline.compute_confidence(chunks, answer) == expected

@@ -34,7 +34,7 @@ JOB_FORM_KEYS = ("job_title", "job_company", "job_location", "job_url", "job_tex
 st.set_page_config(page_title="JobFit", page_icon="🧭", layout="centered")
 
 # the JWT lives here, on the Streamlit server, and never reaches the browser
-for key, default in [("token", None), ("username", None), ("chat", []), ("notice", None)]:
+for key, default in [("token", None), ("username", None), ("chat", []), ("notice", None), ("upload_key", 0)]:
     if key not in st.session_state:
         st.session_state[key] = default
 
@@ -86,6 +86,7 @@ def safe_markdown(text: str) -> str:
 
 # ── Sidebar ────────────────────────────────────────────────────────────────
 
+
 def sidebar(health: dict | None):
     """The app's name, what /health reported and, once signed in, who and a sign-out button."""
     with st.sidebar:
@@ -96,8 +97,9 @@ def sidebar(health: dict | None):
         else:
             label = {"ok": "success", "degraded": "warning"}.get(health.get("status"), "error")
             getattr(st, label)(f"Backend: {health.get('status', '?')}")
-            st.caption(f"Database: {health.get('database')} · Chroma: {health.get('chroma')} · "
-                       f"Ollama: {health.get('ollama')}")
+            st.caption(
+                f"Database: {health.get('database')} · Chroma: {health.get('chroma')} · Ollama: {health.get('ollama')}"
+            )
             if health.get("ollama") == "connected" and not health.get("model_ready"):
                 st.warning(f"{health.get('model')} is still downloading. Questions will fail until it's ready.")
 
@@ -141,6 +143,7 @@ def login_page():
 
 # ── Jobs ───────────────────────────────────────────────────────────────────
 
+
 def jobs_page():
     """The saved postings with their Delete buttons, the samples and reindex buttons, and the form to add one."""
     st.header("Saved postings")
@@ -157,16 +160,24 @@ def jobs_page():
 
     if not jobs:
         st.info("Nothing saved yet. Add a posting below, or load the sample postings.")
-    elif len(jobs) >= api_client.MAX_POSTINGS:
-        st.caption(f"Showing your {api_client.MAX_POSTINGS:,} newest postings.")
+    else:
+        indexed = sum(job["indexed"] for job in jobs)
+        saved_col, companies_col, indexed_col = st.columns(3)
+        saved_col.metric("Postings", len(jobs))
+        companies_col.metric("Companies", len({job["company"].casefold() for job in jobs}))
+        # anything short of all of them means Rebuild search index is needed
+        indexed_col.metric("Indexed for search", f"{indexed} of {len(jobs)}")
+        if len(jobs) >= api_client.MAX_POSTINGS:
+            st.caption(f"Showing your {api_client.MAX_POSTINGS:,} newest postings.")
     for job in jobs:
         with st.container(border=True):
             left, right = st.columns([5, 1])
             left.markdown(f"**{plain(job['title'])}** · {plain(job['company'])}")
             # st.caption renders Markdown too, and the location is the user's text
             location = plain(job["location"]) if job.get("location") else None
-            left.caption(" · ".join(filter(None, [location, job["source"],
-                                                  "indexed" if job["indexed"] else "not indexed"])))
+            left.caption(
+                " · ".join(filter(None, [location, job["source"], "indexed" if job["indexed"] else "not indexed"]))
+            )
             # a second click to confirm: a misclick deleted the posting for good
             with right.popover("Delete"):
                 st.write("Delete this posting? It can't be undone.")
@@ -191,7 +202,9 @@ def jobs_page():
         try:
             with st.spinner("Re-indexing..."):
                 failed = api_client.reindex(st.session_state.token)["failed"]
-            st.session_state.notice = ("warning", f"Failed: {failed}") if failed else ("success", "All postings re-indexed")
+            st.session_state.notice = (
+                ("warning", f"Failed: {failed}") if failed else ("success", "All postings re-indexed")
+            )
         except ApiError as e:
             st.session_state.notice = ("error", str(e))
         st.rerun()
@@ -203,18 +216,37 @@ def jobs_page():
     if st.session_state.pop("clear_job_form", False):
         for key in JOB_FORM_KEYS:
             st.session_state[key] = ""
-    upload = st.file_uploader("Upload a .txt or .md file, or paste the text below", type=["txt", "md"])
+        # an uploader's file can't be set from code, so a new key gives an
+        # empty one. The old one kept the saved file, which left the text box
+        # locked and sent the same file again with the next posting (a 409)
+        st.session_state.upload_key += 1
+    upload = st.file_uploader(
+        "Upload a .txt or .md file, or paste the text below",
+        type=["txt", "md"],
+        key=f"job_upload_{st.session_state.upload_key}",
+    )
     with st.form("add_job"):
         title = st.text_input("Job title", key="job_title")
         company = st.text_input("Company", key="job_company")
         location = st.text_input("Location (optional)", key="job_location")
         url = st.text_input("Link (optional)", key="job_url")
-        text = st.text_area("Posting text", height=200, help="200 to 20,000 characters", key="job_text",
-                            disabled=upload is not None,
-                            placeholder="Using the uploaded file" if upload else "Paste the full posting")
+        text = st.text_area(
+            "Posting text",
+            height=200,
+            help="200 to 20,000 characters",
+            key="job_text",
+            disabled=upload is not None,
+            placeholder="Using the uploaded file" if upload else "Paste the full posting",
+        )
         if st.form_submit_button("Save posting", type="primary"):
-            body = {"title": title, "company": company, "location": location, "url": url, "source": "pasted",
-                    "text": text}
+            body = {
+                "title": title,
+                "company": company,
+                "location": location,
+                "url": url,
+                "source": "pasted",
+                "text": text,
+            }
             if upload is not None:
                 body["text"] = upload.getvalue().decode("utf-8", errors="replace")
                 body["source"] = "upload"
@@ -232,6 +264,7 @@ def jobs_page():
 
 
 # ── Ask ────────────────────────────────────────────────────────────────────
+
 
 def failure_hint(detail: str) -> str:
     """What to check for each 503 the API sends, by its detail message."""
@@ -261,8 +294,14 @@ def ask(question: str, job_ids: list[int]) -> dict:
         if e.status_code is None:
             return {"kind": "error", "content": str(e)}
         return {"kind": "error", "content": f"**{e}** (HTTP {e.status_code}). {failure_hint(str(e))}"}
-    return {"kind": "answer", "content": data["answer"], "confidence": data["confidence"],
-            "sources": data["sources"], "model": data.get("model"), "truncated": data.get("truncated", False)}
+    return {
+        "kind": "answer",
+        "content": data["answer"],
+        "confidence": data["confidence"],
+        "sources": data["sources"],
+        "model": data.get("model"),
+        "truncated": data.get("truncated", False),
+    }
 
 
 def render(msg: dict):
@@ -284,8 +323,9 @@ def render(msg: dict):
             if not sources:
                 st.caption("No saved posting was close enough to use. The model wasn't asked.")
             for s in sources:
-                st.markdown(f"**\\[{s['n']}\\] {plain(s['title'])}** · {plain(s['company'])} · "
-                            f"distance {s['distance']}")
+                st.markdown(
+                    f"**\\[{s['n']}\\] {plain(s['title'])}** · {plain(s['company'])} · distance {s['distance']}"
+                )
                 st.text(s["excerpt"])
 
 

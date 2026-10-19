@@ -135,10 +135,14 @@ class Settings:
         # PyJWT warns when the key is shorter than the hash, and a short secret can be brute-forced
         min_bytes = JWT_KEY_BYTES[self.jwt_algorithm]
         if self.jwt_secret_key and len(self.jwt_secret_key.encode()) < min_bytes:
-            raise ValueError(f"JWT_SECRET_KEY must be at least {min_bytes} bytes for {self.jwt_algorithm}. "
-                             f"Generate one with python -c 'import secrets; print(secrets.token_urlsafe({min_bytes}))'")
+            raise ValueError(
+                f"JWT_SECRET_KEY must be at least {min_bytes} bytes for {self.jwt_algorithm}. "
+                f"Generate one with python -c 'import secrets; print(secrets.token_urlsafe({min_bytes}))'"
+            )
         if not self.database_url.startswith(("sqlite", "postgresql")):
-            raise ValueError(f"DATABASE_URL must be a sqlite:// or postgresql+psycopg:// URL, got {self.database_url!r}")
+            raise ValueError(
+                f"DATABASE_URL must be a sqlite:// or postgresql+psycopg:// URL, got {self.database_url!r}"
+            )
 
     def __repr__(self) -> str:
         """Every setting, with the JWT secret and the database password hidden."""

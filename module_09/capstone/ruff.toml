@@ -1,5 +1,9 @@
 # ruff check backend/ frontend/
+# ruff format --check backend/ frontend/
 target-version = "py311"
+# the width the code was written to. The default 88 splits most error
+# messages and route decorators over several lines
+line-length = 120
 src = ["backend", "frontend"]
 
 [lint.isort]

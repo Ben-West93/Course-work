@@ -127,6 +127,7 @@ def clear_failed_logins(username: str):
 
 # ── Tokens ─────────────────────────────────────────────────────────────────
 
+
 def create_access_token(user_id: int) -> str:
     """A signed JWT for the user, with `sub`, `iat` and `exp` claims."""
     now = datetime.now(UTC)

@@ -110,7 +110,8 @@ downloaded model.
    `_ . -`) and are stored in lowercase. Passwords are 8-128 characters. A login
    lasts 30 minutes. Five wrong passwords for one username within 15 minutes
    block it until the oldest of them is 15 minutes old.
-2. **Save postings** on the Jobs page.
+2. **Save postings** on the Jobs page. The counts at the top show how many
+   are saved, from how many companies, and how many are indexed for search.
    - *Load sample postings* adds 8 made-up junior AI and backend postings.
    - To add your own, paste the text or upload a `.txt` or `.md` file of up
      to 1 MB. It needs 200 to 20,000 characters.
@@ -153,9 +154,10 @@ excerpt numbered `[n]` under Sources:
 
 ![The Ask page: "Which of my saved jobs are remote?" answered with Brightloop Health and Lumen Fieldworks, citing excerpts 1 and 2, with a medium confidence badge and the first source excerpt](screenshots/ask.png)
 
-The Jobs page with the sample postings. *Delete* asks before it removes one:
+The Jobs page with the sample postings, and the counts above them. *Delete*
+asks before it removes one:
 
-![The Jobs page: each saved posting with its title, company, location, source, indexed status and a Delete button](screenshots/jobs.png)
+![The Jobs page: counts of saved postings, companies and postings indexed for search, then each saved posting with its title, company, location, source, indexed status and a Delete button](screenshots/jobs.png)
 
 Swagger at http://localhost:8000/docs. A padlock marks each route that needs a token:
 
@@ -201,13 +203,14 @@ pull in, in `constraints.txt`.
 | LLM | Ollama, running llama3.2:3b |
 | Frontend | Streamlit 1.64, calling the API with requests |
 | Containers | Docker and Docker Compose: six services, two of them one-shot setup steps. Both images run as a non-root user and install the versions pinned in `constraints.txt` |
-| Tests and lint | pytest 9.1, FastAPI's TestClient, Streamlit's AppTest, ruff |
+| Tests, lint and formatting | pytest 9.1, FastAPI's TestClient, Streamlit's AppTest, ruff |
 
 ## Architecture
 
-Six services on one Compose network. The browser only talks to Streamlit,
-Streamlit only to the API, and the API to Postgres and Ollama, with ChromaDB
-running inside it. Arrows are requests, plain lines join a service to its
+Six services on one Compose network. Using the app, the browser only talks to
+Streamlit, Streamlit only to the API, and the API to Postgres and Ollama, with
+ChromaDB running inside it. The API's port 8000 is published as well, for
+Swagger and curl. Arrows are requests, plain lines join a service to its
 volume, and the dotted arrows are the generated password being read.
 
 ```mermaid
@@ -686,23 +689,24 @@ uses the real model and services. Between them every stage has a check:
 | Guards | `main.ask`, `get_owned_job` | user isolation, off-topic questions skip the model (even with a planted posting that shares their words), Postgres down gives 503 | stage 10, including planted instructions against the real model |
 | Races with a delete | `main.try_index`, `main.update_job`, `main.create_job`, `main.add_samples`, `main.reindex` | `test_edge_cases.py`: an edit, a reindex, a new posting and a sample load each losing to a delete, two deletes at once, any other deleted row as a 404, the 1 MB body limit. They pass on SQLite and Postgres, and fail on the code before the fix. On the live stack, these same races with requests sent at once gave 500s, and now give 404 or 401 | |
 | Delete and cascade | `main.delete_me` | the cascade on SQLite and Postgres | stage 11 |
-| UI | `frontend/app.py`, `frontend/api_client.py` | `frontend/tests/test_app.py`: question to rendered answer, filters, every failure as a chat reply or an error on the page (sign-in and every Jobs action with the API gone), escaping of titles, companies and locations, links in answers as plain text, form kept on error, Delete asking first, postings past the first 100, a posting repeated across pages shown once; `test_api_client.py`: what each call sends, paging through `/jobs`, the `/ask` timeout following `OLLAMA_TIMEOUT`, every network failure as an `ApiError` | stage 1 (reachable) |
+| UI | `frontend/app.py`, `frontend/api_client.py` | `frontend/tests/test_app.py`: question to rendered answer, filters, every failure as a chat reply or an error on the page (sign-in and every Jobs action with the API gone), escaping of titles, companies and locations, links in answers as plain text, form kept on error, an empty upload box after a save, the Jobs page counts, Delete asking first, postings past the first 100, a posting repeated across pages shown once; `test_api_client.py`: what each call sends, paging through `/jobs`, the `/ask` timeout following `OLLAMA_TIMEOUT`, every network failure as an `ApiError` | stage 1 (reachable) |
 | Compose wiring | `docker-compose.yml` | `docker build --target test ./backend` | stage 1 |
 
 ## Tests
 
 The `cd backend` and `cd frontend` commands need the virtualenv from
-[Running without Docker](#running-without-docker), and the lint also needs
-`pip install ruff`. The image build needs only Docker.
+[Running without Docker](#running-without-docker), and the lint and format
+checks also need `pip install ruff==0.16.10`. The image build needs only Docker.
 
 | What | Command | Count |
 |---|---|---|
 | Backend, local (SQLite, Ollama mocked) | `cd backend && pytest -q` | 438 |
 | Backend, inside the image with no network | `docker build --target test ./backend` | 438 |
 | Backend against Postgres (stack up) | the three commands below | 438 |
-| Frontend (AppTest and the API client, fake API) | `cd frontend && pytest -q` | 112 |
+| Frontend (AppTest and the API client, fake API) | `cd frontend && pytest -q` | 114 |
 | Whole flow against the live stack | `docker-compose exec backend python walkthrough.py` | 42 checks |
 | Lint | `ruff check backend/ frontend/` | |
+| Formatting (120 columns, set in `ruff.toml`) | `ruff format --check backend/ frontend/` | |
 
 Against Postgres. The suite drops every table in the database it's given,
 so it refuses any database whose name doesn't contain "test". The first
@@ -710,7 +714,7 @@ command says so if `jobfit_test` already exists, which is fine. The last one
 reads the generated password from its volume:
 
 ```bash
-docker compose exec postgres createdb -U jobfit jobfit_test
+docker-compose exec postgres createdb -U jobfit jobfit_test
 ```
 
 ```bash
@@ -806,7 +810,7 @@ capstone/
 ├── .env.example              every setting, with defaults
 ├── CHECK_IN.md               Day 8 status, measurements and open issues
 ├── screenshots/              the Ask, Jobs and Swagger pages shown above
-├── ruff.toml
+├── ruff.toml                 lint and format settings
 ├── backend/
 │   ├── main.py               routes: /health, /auth, /me, /jobs, /ask
 │   ├── schemas.py            Pydantic request and response models, all validation

@@ -102,6 +102,7 @@ def request(method: str, path: str, token: str | None = None, timeout: float = 3
 
 # ── Health and auth ────────────────────────────────────────────────────────
 
+
 def health_check() -> dict | None:
     """/health's report, including the 503 it sends when the database is down. None if nothing usable answered."""
     try:
@@ -123,6 +124,7 @@ def register(username: str, password: str) -> dict:
 
 
 # ── Job postings ───────────────────────────────────────────────────────────
+
 
 def list_jobs(token: str) -> list[dict]:
     """The user's postings, newest first, fetched PAGE_SIZE at a time up to MAX_POSTINGS."""
@@ -164,6 +166,7 @@ def reindex(token: str) -> dict:
 
 
 # ── Ask ────────────────────────────────────────────────────────────────────
+
 
 def ask(question: str, token: str, job_ids: list[int] | None = None) -> dict:
     """Ask about the user's postings, or only the ones in job_ids. Returns the answer, confidence and sources."""
